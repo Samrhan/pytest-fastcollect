@@ -174,9 +174,8 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --out dist --find-interpreter
+          args: --release --out dist
       - name: Install built wheel
-        shell: bash
         run: pip install dist/*.whl
       - name: Run tests
         run: pytest tests/ -v
