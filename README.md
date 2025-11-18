@@ -65,6 +65,11 @@ pytest --no-fastcollect-cache
 # Experimental: Parallel module import (2.33x faster on pytest itself!)
 pytest --parallel-import --parallel-workers=4
 
+# Experimental: Collection Daemon (instant re-collection)
+pytest --daemon-start tests/        # Start daemon
+pytest --daemon-status              # Check status
+pytest --daemon-stop                # Stop daemon
+
 # Run benchmarks
 python benchmark.py --synthetic
 python benchmark_incremental.py  # Shows cache effectiveness
@@ -81,6 +86,9 @@ python benchmark_parallel.py     # Test parallel import performance
 - `--benchmark-collect`: Benchmark collection time (fast vs standard)
 - `--parallel-import`: **[Experimental]** Pre-import modules in parallel (default: False)
 - `--parallel-workers=N`: Number of parallel import workers (default: CPU count)
+- `--daemon-start`: **[Experimental]** Start collection daemon for instant re-collection
+- `--daemon-stop`: Stop the collection daemon
+- `--daemon-status`: Show daemon status (running/not running, PID, uptime, cached modules)
 
 ## Architecture
 
@@ -116,11 +124,15 @@ pytest-fastcollect/
 ├── pytest_fastcollect/
 │   ├── __init__.py               # Python package init
 │   ├── plugin.py                 # pytest plugin hooks
-│   └── cache.py                  # Incremental caching layer
+│   ├── cache.py                  # Incremental caching layer
+│   ├── daemon.py                 # Collection daemon server
+│   ├── daemon_client.py          # Daemon client communication
+│   └── filter.py                 # Selective import filtering
 ├── tests/
 │   └── sample_tests/             # Sample tests for validation
 ├── benchmark.py                  # Performance benchmarking
 ├── benchmark_incremental.py      # Cache effectiveness benchmark
+├── benchmark_parallel.py         # Parallel import benchmarking
 ├── Cargo.toml                    # Rust dependencies
 └── pyproject.toml                # Python package metadata
 ```
@@ -237,6 +249,54 @@ pytest --parallel-import --use-processes --parallel-workers=4
 
 📄 See [PARALLEL_IMPORT_RESULTS.md](PARALLEL_IMPORT_RESULTS.md) for threading details.
 📄 See [PROCESS_POOL_RESULTS.md](PROCESS_POOL_RESULTS.md) for process pool analysis.
+
+### Collection Daemon (Experimental - Phase 1) 🚀
+
+**NEW**: Long-running daemon process that keeps test modules imported in memory for instant re-collection!
+
+```bash
+# Start the daemon (imports all modules once)
+pytest --daemon-start tests/
+
+# Check daemon status
+pytest --daemon-status
+
+# Stop the daemon
+pytest --daemon-stop
+```
+
+**Expected Performance** (Phase 2 - Full Integration):
+- First run: ~10s (cold start, imports all modules)
+- Subsequent runs: ~0.01s (instant! modules already in memory)
+- **100-1000x speedup** on subsequent test runs
+
+**Current Status (Phase 1 - MVP)**:
+- ✅ Daemon server with Unix socket communication
+- ✅ Module pre-importing and caching in memory
+- ✅ Start/stop/status management commands
+- ⏳ Full pytest collection integration (Phase 2)
+- ⏳ File watching for auto-reload (Phase 2)
+
+**Architecture**:
+- Long-running Python process
+- Unix socket IPC for client-daemon communication
+- Keeps modules in `sys.modules` across pytest runs
+- Background process management with forking
+- Per-project daemon instances (separate socket per root)
+
+**When to use**:
+- 🎯 **TDD workflows**: Constantly re-running tests during development
+- 🎯 **Watch mode**: Instant collection on file changes
+- 🎯 **Large codebases**: Where collection time > 5 seconds
+- ⚠️ **Not for CI/CD**: Designed for development, not one-shot runs
+
+**Current Limitations**:
+- Unix/Linux only (uses Unix domain sockets)
+- Phase 1: Infrastructure only, not yet integrated with pytest collection
+- Requires manual daemon management (start/stop)
+- May require reload after significant code changes
+
+📄 See [COLLECTION_DAEMON_PLAN.md](COLLECTION_DAEMON_PLAN.md) for full implementation roadmap.
 
 ### Django Real-World Benchmark 🚀
 
