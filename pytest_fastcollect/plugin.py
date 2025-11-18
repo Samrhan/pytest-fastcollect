@@ -11,10 +11,13 @@ from _pytest.config import Config
 
 try:
     from .pytest_fastcollect import FastCollector
+    from .cache import CollectionCache, CacheStats
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
     FastCollector = None
+    CollectionCache = None
+    CacheStats = None
 
 
 class FastCollectionSession:
@@ -104,6 +107,15 @@ def pytest_configure(config: Config):
                   file=sys.stderr)
         return
 
+    # Clear cache if requested
+    if hasattr(config.option, 'fastcollect_clear_cache') and config.option.fastcollect_clear_cache:
+        cache_dir = _get_cache_dir(config)
+        if CollectionCache:
+            cache = CollectionCache(cache_dir)
+            cache.clear()
+            if config.option.verbose >= 0:
+                print("FastCollect: Cache cleared", file=sys.stderr)
+
 
 def pytest_collection_modifyitems(session: Session, config: Config, items: list):
     """Modify collected items - this is called AFTER collection."""
@@ -111,9 +123,6 @@ def pytest_collection_modifyitems(session: Session, config: Config, items: list)
     pass
 
 
-def pytest_collection_finish(session: Session):
-    """Called after collection has been performed and modified."""
-    pass
 
 
 def pytest_addoption(parser):
@@ -132,6 +141,24 @@ def pytest_addoption(parser):
         help='Disable fast collection and use standard pytest collection'
     )
     group.addoption(
+        '--fastcollect-cache',
+        action='store_true',
+        default=True,
+        help='Enable incremental caching (default: True)'
+    )
+    group.addoption(
+        '--no-fastcollect-cache',
+        dest='fastcollect_cache',
+        action='store_false',
+        help='Disable caching and parse all files'
+    )
+    group.addoption(
+        '--fastcollect-clear-cache',
+        action='store_true',
+        default=False,
+        help='Clear the fastcollect cache before collection'
+    )
+    group.addoption(
         '--benchmark-collect',
         action='store_true',
         default=False,
@@ -148,13 +175,22 @@ def pytest_report_header(config: Config):
         return "fastcollect: Rust extension not available"
 
 
-# Store test files cache
+# Store test files cache and collection cache
 _test_files_cache = None
+_collection_cache = None
+_cache_stats = None
+
+
+def _get_cache_dir(config: Config) -> Path:
+    """Get the cache directory for fastcollect."""
+    # Use pytest's cache directory
+    cache_dir = Path(config.cache._cachedir) / "v" / "fastcollect"
+    return cache_dir
 
 
 def pytest_ignore_collect(collection_path, config):
     """Called to determine whether to ignore a file/directory during collection."""
-    global _test_files_cache
+    global _test_files_cache, _collection_cache, _cache_stats
 
     if not RUST_AVAILABLE:
         return None
@@ -163,11 +199,35 @@ def pytest_ignore_collect(collection_path, config):
     if hasattr(config.option, 'use_fast_collect') and not config.option.use_fast_collect:
         return None
 
+    # Check if caching is disabled
+    use_cache = getattr(config.option, 'fastcollect_cache', True)
+
     # Initialize cache on first call
     if _test_files_cache is None:
         root_path = str(config.rootpath)
         fast_collector = FastCollector(root_path)
-        collected_data = fast_collector.collect()
+
+        if use_cache:
+            # Use caching for incremental collection
+            cache_dir = _get_cache_dir(config)
+            _collection_cache = CollectionCache(cache_dir)
+
+            # Get metadata from Rust (includes mtimes)
+            rust_metadata = fast_collector.collect_with_metadata()
+
+            # Merge with cache
+            collected_data, cache_updated = _collection_cache.merge_with_rust_data(rust_metadata)
+
+            # Save cache if updated
+            if cache_updated:
+                _collection_cache.save_cache()
+
+            _cache_stats = _collection_cache.stats
+        else:
+            # No caching, just collect
+            collected_data = fast_collector.collect()
+            _cache_stats = None
+
         _test_files_cache = set(collected_data.keys())
 
     # Only collect Python test files that Rust found
@@ -177,3 +237,12 @@ def pytest_ignore_collect(collection_path, config):
         return should_ignore
 
     return None
+
+
+def pytest_collection_finish(session: Session):
+    """Called after collection has been performed and modified."""
+    global _cache_stats
+
+    # Display cache statistics if available and verbose
+    if _cache_stats and session.config.option.verbose >= 0:
+        print(f"\n{_cache_stats}", file=sys.stderr)
