@@ -16,6 +16,11 @@ try:
     from .pytest_fastcollect import FastCollector
     from .cache import CollectionCache, CacheStats
     from .filter import get_files_with_matching_tests
+    from .daemon import start_daemon_background
+    from .daemon_client import (
+        DaemonClient, get_socket_path, save_daemon_pid,
+        get_daemon_pid, stop_daemon, is_process_running
+    )
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
@@ -23,6 +28,9 @@ except ImportError:
     CollectionCache = None
     CacheStats = None
     get_files_with_matching_tests = None
+    start_daemon_background = None
+    DaemonClient = None
+    get_socket_path = None
 
 
 def pytest_configure(config: Config):
@@ -35,12 +43,39 @@ def pytest_configure(config: Config):
                   file=sys.stderr)
         return
 
+    # Handle daemon commands first
+    root_path = str(config.rootpath)
+    socket_path = get_socket_path(root_path) if get_socket_path else None
+
+    # Handle --daemon-stop
+    if hasattr(config.option, 'daemon_stop') and config.option.daemon_stop:
+        if socket_path and stop_daemon:
+            if stop_daemon(socket_path):
+                print(f"Daemon stopped", file=sys.stderr)
+            else:
+                print(f"No daemon running", file=sys.stderr)
+        pytest.exit("Daemon stopped", returncode=0)
+
+    # Handle --daemon-status
+    if hasattr(config.option, 'daemon_status') and config.option.daemon_status:
+        if socket_path and DaemonClient:
+            try:
+                client = DaemonClient(socket_path)
+                status = client.get_status()
+                print(f"Daemon: RUNNING", file=sys.stderr)
+                print(f"  PID: {status.get('pid')}", file=sys.stderr)
+                print(f"  Uptime: {status.get('uptime', 0):.1f}s", file=sys.stderr)
+                print(f"  Cached modules: {status.get('cached_modules', 0)}", file=sys.stderr)
+            except:
+                print(f"Daemon: NOT RUNNING", file=sys.stderr)
+        pytest.exit("Daemon status checked", returncode=0)
+
     # Check if fast collection is disabled
     if hasattr(config.option, 'use_fast_collect') and not config.option.use_fast_collect:
         return
 
     # Initialize the collector and cache early
-    root_path = str(config.rootpath)
+    fast_collector = FastCollector(root_path)
     fast_collector = FastCollector(root_path)
     use_cache = getattr(config.option, 'fastcollect_cache', True)
 
@@ -91,6 +126,17 @@ def pytest_configure(config: Config):
     else:
         # No filtering, collect all files
         _test_files_cache = set(collected_data.keys())
+
+    # Handle --daemon-start
+    if hasattr(config.option, 'daemon_start') and config.option.daemon_start:
+        if socket_path and start_daemon_background:
+            print(f"Starting collection daemon...", file=sys.stderr)
+            pid = start_daemon_background(root_path, socket_path, _test_files_cache)
+            if pid > 0:
+                save_daemon_pid(socket_path, pid)
+                print(f"Daemon started (PID {pid})", file=sys.stderr)
+                print(f"Future pytest runs will use instant collection!", file=sys.stderr)
+        pytest.exit("Daemon started", returncode=0)
 
     # Parallel import optimization (if enabled)
     if hasattr(config.option, 'parallel_import') and config.option.parallel_import:
@@ -155,6 +201,24 @@ def pytest_addoption(parser):
         type=int,
         default=None,
         help='Number of parallel import workers (default: CPU count)'
+    )
+    group.addoption(
+        '--daemon-start',
+        action='store_true',
+        default=False,
+        help='Start collection daemon (keeps modules imported for instant re-collection)'
+    )
+    group.addoption(
+        '--daemon-stop',
+        action='store_true',
+        default=False,
+        help='Stop collection daemon'
+    )
+    group.addoption(
+        '--daemon-status',
+        action='store_true',
+        default=False,
+        help='Show collection daemon status'
     )
 
 
