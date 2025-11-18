@@ -5,6 +5,7 @@ use rustpython_parser::{ast, Parse};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,13 @@ enum TestItemType {
     Function,
     Class,
     Method,
+}
+
+#[derive(Debug, Clone)]
+struct FileMetadata {
+    path: String,
+    mtime: f64,
+    test_items: Vec<TestItem>,
 }
 
 /// Fast test collector using Rust
@@ -67,6 +75,49 @@ impl FastCollector {
 
         // Convert to Python dict
         self.items_to_python(py, &all_items)
+    }
+
+    /// Collect with file metadata (includes modification times)
+    fn collect_with_metadata(&self, py: Python) -> PyResult<Py<PyAny>> {
+        let test_files = self.find_test_files();
+
+        // Use rayon for parallel processing
+        let file_metadata: Vec<FileMetadata> = test_files
+            .par_iter()
+            .filter_map(|file_path| {
+                // Get file modification time
+                let mtime = match fs::metadata(file_path) {
+                    Ok(metadata) => {
+                        match metadata.modified() {
+                            Ok(time) => {
+                                match time.duration_since(SystemTime::UNIX_EPOCH) {
+                                    Ok(duration) => duration.as_secs_f64(),
+                                    Err(_) => 0.0,
+                                }
+                            }
+                            Err(_) => 0.0,
+                        }
+                    }
+                    Err(_) => 0.0,
+                };
+
+                // Parse test items
+                let test_items = self.parse_test_file(file_path).unwrap_or_default();
+
+                if test_items.is_empty() {
+                    return None;
+                }
+
+                Some(FileMetadata {
+                    path: file_path.to_string_lossy().to_string(),
+                    mtime,
+                    test_items,
+                })
+            })
+            .collect();
+
+        // Convert to Python dict
+        self.metadata_to_python(py, &file_metadata)
     }
 
     /// Collect tests from a specific file
@@ -278,6 +329,36 @@ impl FastCollector {
             }
 
             result.set_item(file_path, items_list)?;
+        }
+
+        Ok(result.into())
+    }
+
+    /// Convert file metadata to Python dict structure
+    fn metadata_to_python(&self, py: Python, metadata: &[FileMetadata]) -> PyResult<Py<PyAny>> {
+        let result = PyDict::new(py);
+
+        for file_meta in metadata {
+            let file_dict = PyDict::new(py);
+            file_dict.set_item("mtime", file_meta.mtime)?;
+
+            let items_list = PyList::empty(py);
+            for item in &file_meta.test_items {
+                let item_dict = PyDict::new(py);
+                item_dict.set_item("name", &item.name)?;
+                item_dict.set_item("line", item.line_number)?;
+                item_dict.set_item("type", format!("{:?}", item.item_type))?;
+                item_dict.set_item("file_path", &item.file_path)?;
+
+                if let Some(ref class_name) = item.class_name {
+                    item_dict.set_item("class", class_name)?;
+                }
+
+                items_list.append(item_dict)?;
+            }
+            file_dict.set_item("items", items_list)?;
+
+            result.set_item(&file_meta.path, file_dict)?;
         }
 
         Ok(result.into())
