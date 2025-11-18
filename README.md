@@ -118,7 +118,28 @@ pytest-fastcollect/
 
 ## Benchmarks
 
-### v0.2.0 - Incremental Caching (Latest)
+### v0.3.0 - Better Integration (Latest)
+
+**Architecture Improvements**:
+```
+Early initialization:             Collection happens in pytest_configure
+File filtering:                   Simplified pytest_ignore_collect hook
+Collection overhead:              Reduced hook call complexity
+Code quality:                     Cleaner separation of concerns
+```
+
+**Performance** (comparable to v0.2.0):
+- Maintains incremental caching benefits (~5% improvement on warm cache)
+- No duplicate collection issues
+- Cleaner initialization flow
+
+**Key Changes**:
+- Moved Rust collection from lazy (first `pytest_ignore_collect` call) to eager (in `pytest_configure`)
+- Simplified `pytest_ignore_collect` to only use pre-collected data
+- Removed custom collector class to avoid pytest hook conflicts
+- More predictable and testable architecture
+
+### v0.2.0 - Incremental Caching
 
 **Incremental Collection Benchmark (500 files, 20 tests/file, 5 files modified)**:
 ```
@@ -303,7 +324,15 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ### Changelog
 
-#### v0.2.0 (Current)
+#### v0.3.0 (Current)
+- 🏗️ **Better Integration**: Refactored plugin architecture for cleaner code
+- ⚡ Early initialization in `pytest_configure` instead of lazy loading
+- 🔧 Simplified `pytest_ignore_collect` hook to only use cached data
+- 🐛 Fixed duplicate collection issues from custom collector conflicts
+- 📊 Maintains all caching benefits from v0.2.0
+- 🧹 Cleaner separation of concerns and more predictable behavior
+
+#### v0.2.0
 - ✨ Added incremental caching with file modification tracking
 - 💾 Cache persists to `.pytest_cache/v/fastcollect/cache.json`
 - 📊 Shows cache statistics after collection
