@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.10,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pytest-fastcollect"
+version = "0.4.0"
+description = "A high-performance pytest plugin that replaces test collection with a Rust-based implementation"
+requires-python = ">=3.8"
+dependencies = [
+    "pytest>=7.0.0",
+]
+classifiers = [
+    "Framework :: Pytest",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Software Development :: Testing",
+]
+readme = "README.md"
+license = {file = "LICENSE"}
+
+[project.entry-points.pytest11]
+fastcollect = "pytest_fastcollect.plugin"
+
+[project.optional-dependencies]
+dev = [
+    "pytest-benchmark>=4.0.0",
+]
