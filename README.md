@@ -161,6 +161,38 @@ pytest -k test_user  # 0.57s (1.71x faster!)
 - Shows file selection stats with `-v`
 - Fully compatible with pytest's filter syntax
 
+### Django Real-World Benchmark 🚀
+
+**The ultimate test**: Django's massive test suite with **~1977 Python test files**!
+
+**Full Collection Performance**:
+```
+Scenario                        Time      Speedup
+Baseline (no plugin)            36.59s    -
+FastCollect                     9.16s     3.99x faster ⚡⚡⚡
+```
+
+**Selective Import Performance**:
+```
+Filter Type                     Time      Speedup vs Full
+Full collection                 9.16s     baseline
+-k test_get                     4.12s     2.22x faster ⚡⚡
+-k test_forms                   3.80s     2.41x faster ⚡⚡
+-k "test_view or test_model"    4.19s     2.19x faster ⚡⚡
+```
+
+**Combined Impact**: FastCollect + Selective Import = **9.6x faster** than baseline pytest!
+- Baseline: 36.59s → FastCollect + filter: 3.80s
+
+**Key Takeaways**:
+- ✅ **4x faster** on full collection (real-world production codebase)
+- ✅ **2-2.4x additional speedup** with keyword filters
+- ✅ **Nearly 10x overall** when combining both optimizations
+- ✅ **Production-ready** on Django's complex test infrastructure
+- ✅ **Zero configuration** required - works out of the box
+
+📄 See [DJANGO_BENCHMARK_RESULTS.md](DJANGO_BENCHMARK_RESULTS.md) for detailed analysis.
+
 ### v0.3.0 - Better Integration
 
 **Architecture Improvements**:
