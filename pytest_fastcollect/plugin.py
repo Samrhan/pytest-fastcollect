@@ -2,8 +2,10 @@
 
 import os
 import sys
+import importlib.util
 from pathlib import Path
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Set
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytest
 from _pytest.python import Module, Class, Function
 from _pytest.main import Session
@@ -90,6 +92,10 @@ def pytest_configure(config: Config):
         # No filtering, collect all files
         _test_files_cache = set(collected_data.keys())
 
+    # Parallel import optimization (if enabled)
+    if hasattr(config.option, 'parallel_import') and config.option.parallel_import:
+        _parallel_import_modules(_test_files_cache, config)
+
 
 def pytest_collection_modifyitems(session: Session, config: Config, items: list):
     """Modify collected items - this is called AFTER collection."""
@@ -138,6 +144,18 @@ def pytest_addoption(parser):
         default=False,
         help='Benchmark collection time (fast vs standard)'
     )
+    group.addoption(
+        '--parallel-import',
+        action='store_true',
+        default=False,
+        help='Pre-import test modules in parallel (experimental)'
+    )
+    group.addoption(
+        '--parallel-workers',
+        type=int,
+        default=None,
+        help='Number of parallel import workers (default: CPU count)'
+    )
 
 
 def pytest_report_header(config: Config):
@@ -161,6 +179,99 @@ def _get_cache_dir(config: Config) -> Path:
     # Use pytest's cache directory
     cache_dir = Path(config.cache._cachedir) / "v" / "fastcollect"
     return cache_dir
+
+
+def _import_test_module(file_path: str, root_path: str) -> tuple:
+    """Import a single test module.
+
+    Returns: (file_path, success, error_message)
+    """
+    try:
+        # Convert file path to module name
+        path_obj = Path(file_path)
+        root_obj = Path(root_path)
+
+        # Get relative path from root
+        try:
+            rel_path = path_obj.relative_to(root_obj)
+        except ValueError:
+            # If file is not under root, use absolute path
+            rel_path = path_obj
+
+        # Convert path to module name (remove .py and replace / with .)
+        module_name = str(rel_path.with_suffix('')).replace(os.sep, '.')
+
+        # Check if already imported
+        if module_name in sys.modules:
+            return (file_path, True, None)
+
+        # Import the module using importlib
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if spec and spec.loader:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            return (file_path, True, None)
+        else:
+            return (file_path, False, "Could not create module spec")
+
+    except Exception as e:
+        return (file_path, False, str(e))
+
+
+def _parallel_import_modules(file_paths: Set[str], config: Config):
+    """Pre-import test modules in parallel to warm the cache.
+
+    This pre-imports modules before pytest's collection phase, so when pytest
+    calls importtestmodule(), the modules are already in sys.modules.
+    """
+    import time
+
+    if not file_paths:
+        return
+
+    # Get number of workers
+    workers = getattr(config.option, 'parallel_workers', None)
+    if workers is None:
+        workers = os.cpu_count() or 4
+
+    root_path = str(config.rootpath)
+
+    if config.option.verbose >= 1:
+        print(f"\nFastCollect: Parallel import ({workers} workers) - importing {len(file_paths)} modules...",
+              file=sys.stderr, end=" ", flush=True)
+
+    start_time = time.time()
+    success_count = 0
+    error_count = 0
+
+    # Use ThreadPoolExecutor for parallel imports
+    # Even with GIL, I/O operations (reading .py/.pyc files) can benefit
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Submit all import tasks
+        future_to_path = {
+            executor.submit(_import_test_module, file_path, root_path): file_path
+            for file_path in file_paths
+        }
+
+        # Collect results
+        for future in as_completed(future_to_path):
+            file_path, success, error = future.result()
+            if success:
+                success_count += 1
+            else:
+                error_count += 1
+                if config.option.verbose >= 2:
+                    print(f"\n  Warning: Failed to import {file_path}: {error}",
+                          file=sys.stderr)
+
+    elapsed = time.time() - start_time
+
+    if config.option.verbose >= 1:
+        print(f"Done ({elapsed:.2f}s)", file=sys.stderr)
+        if error_count > 0:
+            print(f"  Imported: {success_count}/{len(file_paths)} modules ({error_count} errors)",
+                  file=sys.stderr)
 
 
 def pytest_ignore_collect(collection_path, config):
