@@ -15,6 +15,7 @@ struct TestItem {
     line_number: usize,
     item_type: TestItemType,
     class_name: Option<String>,
+    markers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -254,6 +255,7 @@ impl FastCollector {
             ast::Stmt::FunctionDef(func) => {
                 let name = func.name.as_str();
                 if self.is_test_function(name) {
+                    let markers = self.extract_markers(&func.decorator_list);
                     items.push(TestItem {
                         file_path: file_path.to_string(),
                         name: name.to_string(),
@@ -264,12 +266,14 @@ impl FastCollector {
                             TestItemType::Function
                         },
                         class_name: class_context.map(|s| s.to_string()),
+                        markers,
                     });
                 }
             }
             ast::Stmt::ClassDef(class) => {
                 let class_name = class.name.as_str();
                 if self.is_test_class(class_name) {
+                    let markers = self.extract_markers(&class.decorator_list);
                     // Add the class itself
                     items.push(TestItem {
                         file_path: file_path.to_string(),
@@ -277,6 +281,7 @@ impl FastCollector {
                         line_number: class.range.start().to_u32() as usize,
                         item_type: TestItemType::Class,
                         class_name: None,
+                        markers,
                     });
 
                     // Extract methods from the class
@@ -287,6 +292,46 @@ impl FastCollector {
             }
             _ => {}
         }
+    }
+
+    /// Extract pytest markers from decorator list
+    fn extract_markers(&self, decorators: &[ast::Expr]) -> Vec<String> {
+        let mut markers = Vec::new();
+
+        for decorator in decorators {
+            // Handle @pytest.mark.marker_name or @mark.marker_name
+            if let ast::Expr::Attribute(attr) = decorator {
+                if let ast::Expr::Attribute(parent_attr) = attr.value.as_ref() {
+                    if let ast::Expr::Name(name) = parent_attr.value.as_ref() {
+                        if name.id.as_str() == "pytest" && parent_attr.attr.as_str() == "mark" {
+                            markers.push(attr.attr.to_string());
+                        }
+                    }
+                } else if let ast::Expr::Name(name) = attr.value.as_ref() {
+                    if name.id.as_str() == "mark" {
+                        markers.push(attr.attr.to_string());
+                    }
+                }
+            }
+            // Handle @pytest.mark.marker_name(...) or @mark.marker_name(...)
+            else if let ast::Expr::Call(call) = decorator {
+                if let ast::Expr::Attribute(attr) = call.func.as_ref() {
+                    if let ast::Expr::Attribute(parent_attr) = attr.value.as_ref() {
+                        if let ast::Expr::Name(name) = parent_attr.value.as_ref() {
+                            if name.id.as_str() == "pytest" && parent_attr.attr.as_str() == "mark" {
+                                markers.push(attr.attr.to_string());
+                            }
+                        }
+                    } else if let ast::Expr::Name(name) = attr.value.as_ref() {
+                        if name.id.as_str() == "mark" {
+                            markers.push(attr.attr.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        markers
     }
 
     /// Check if a function name indicates a test function
@@ -325,6 +370,13 @@ impl FastCollector {
                     item_dict.set_item("class", class_name)?;
                 }
 
+                // Add markers
+                let markers_list = PyList::empty(py);
+                for marker in &item.markers {
+                    markers_list.append(marker)?;
+                }
+                item_dict.set_item("markers", markers_list)?;
+
                 items_list.append(item_dict)?;
             }
 
@@ -353,6 +405,13 @@ impl FastCollector {
                 if let Some(ref class_name) = item.class_name {
                     item_dict.set_item("class", class_name)?;
                 }
+
+                // Add markers
+                let markers_list = PyList::empty(py);
+                for marker in &item.markers {
+                    markers_list.append(marker)?;
+                }
+                item_dict.set_item("markers", markers_list)?;
 
                 items_list.append(item_dict)?;
             }
