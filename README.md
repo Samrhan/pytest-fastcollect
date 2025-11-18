@@ -62,9 +62,13 @@ pytest --fastcollect-clear-cache --collect-only
 # Disable caching (always parse)
 pytest --no-fastcollect-cache
 
+# Experimental: Parallel module import (2.33x faster on pytest itself!)
+pytest --parallel-import --parallel-workers=4
+
 # Run benchmarks
 python benchmark.py --synthetic
 python benchmark_incremental.py  # Shows cache effectiveness
+python benchmark_parallel.py     # Test parallel import performance
 ```
 
 ### Configuration Options
@@ -75,6 +79,8 @@ python benchmark_incremental.py  # Shows cache effectiveness
 - `--no-fastcollect-cache`: Disable caching and parse all files
 - `--fastcollect-clear-cache`: Clear the cache before collection
 - `--benchmark-collect`: Benchmark collection time (fast vs standard)
+- `--parallel-import`: **[Experimental]** Pre-import modules in parallel (default: False)
+- `--parallel-workers=N`: Number of parallel import workers (default: CPU count)
 
 ## Architecture
 
@@ -191,6 +197,33 @@ Tested on **5 popular Python projects** to validate real-world performance:
 **Bottom Line**: pytest-fastcollect is **ideal for large codebases** (200+ test files) where collection time becomes a bottleneck. For projects with < 50 files, the overhead roughly equals the benefit.
 
 📄 See [REALWORLD_BENCHMARKS.md](REALWORLD_BENCHMARKS.md) for comprehensive analysis across all projects.
+
+### Parallel Import (Experimental) ⚡⚡⚡
+
+**NEW**: Pre-import test modules in parallel for additional speedup!
+
+```bash
+pytest --parallel-import --parallel-workers=4
+```
+
+**Benchmark Results** (with --parallel-import):
+
+| Project | Baseline | With Parallel | Speedup | Grade |
+|---------|----------|---------------|---------|-------|
+| **Pytest** | 2.40s | 1.03s | **2.33x faster** | ⚡⚡⚡ Excellent |
+| **SQLAlchemy** | 0.69s | 0.64s | **1.07x faster** | ✓ Minor |
+| **Django** | 4.80s | 4.90s | **0.98x slower** | ⚠️ Overhead |
+
+**Key Finding**: Parallel import works great for projects with **simple, independent test modules** (like pytest itself!), but can hurt projects with complex interdependent imports (like Django).
+
+**When to use**:
+- ✅ Medium projects (100-300 files) with simple imports → **2-2.5x speedup**
+- ⚠️ Projects with complex imports → **Benchmark first**
+- ❌ Small projects (< 100 files) → **Overhead not worth it**
+
+**Optimal configuration**: 4 workers seems to be the sweet spot for most projects.
+
+📄 See [PARALLEL_IMPORT_RESULTS.md](PARALLEL_IMPORT_RESULTS.md) for detailed analysis and recommendations.
 
 ### Django Real-World Benchmark 🚀
 
