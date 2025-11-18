@@ -248,7 +248,7 @@ impl FastCollector {
         name.starts_with("Test")
     }
 
-    /// Convert test items to Python dict structure
+    /// Convert test items to Python dict structure with rich metadata
     fn items_to_python(&self, py: Python, items: &[TestItem]) -> PyResult<Py<PyAny>> {
         let result = PyDict::new(py);
 
@@ -268,6 +268,7 @@ impl FastCollector {
                 item_dict.set_item("name", &item.name)?;
                 item_dict.set_item("line", item.line_number)?;
                 item_dict.set_item("type", format!("{:?}", item.item_type))?;
+                item_dict.set_item("file_path", &item.file_path)?;
 
                 if let Some(ref class_name) = item.class_name {
                     item_dict.set_item("class", class_name)?;
