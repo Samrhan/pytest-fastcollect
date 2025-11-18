@@ -223,7 +223,20 @@ pytest --parallel-import --parallel-workers=4
 
 **Optimal configuration**: 4 workers seems to be the sweet spot for most projects.
 
-📄 See [PARALLEL_IMPORT_RESULTS.md](PARALLEL_IMPORT_RESULTS.md) for detailed analysis and recommendations.
+**ProcessPoolExecutor** (experimental):
+```bash
+# Bypass GIL with true process parallelism
+pytest --parallel-import --use-processes --parallel-workers=4
+```
+
+**Results**: ProcessPoolExecutor tested but **not recommended**
+- ❌ Slower than ThreadPoolExecutor in most cases (0.88-1.10x)
+- Process overhead > GIL bypass benefit
+- Must import twice (subprocess + main process)
+- ThreadPoolExecutor remains the better choice
+
+📄 See [PARALLEL_IMPORT_RESULTS.md](PARALLEL_IMPORT_RESULTS.md) for threading details.
+📄 See [PROCESS_POOL_RESULTS.md](PROCESS_POOL_RESULTS.md) for process pool analysis.
 
 ### Django Real-World Benchmark 🚀
 

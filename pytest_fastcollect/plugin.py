@@ -5,7 +5,7 @@ import sys
 import importlib.util
 from pathlib import Path
 from typing import List, Optional, Any, Set
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import pytest
 from _pytest.python import Module, Class, Function
 from _pytest.main import Session
@@ -156,6 +156,12 @@ def pytest_addoption(parser):
         default=None,
         help='Number of parallel import workers (default: CPU count)'
     )
+    group.addoption(
+        '--use-processes',
+        action='store_true',
+        default=False,
+        help='Use ProcessPoolExecutor instead of ThreadPoolExecutor (bypasses GIL)'
+    )
 
 
 def pytest_report_header(config: Config):
@@ -219,11 +225,48 @@ def _import_test_module(file_path: str, root_path: str) -> tuple:
         return (file_path, False, str(e))
 
 
+def _import_test_module_process(file_path: str, root_path: str) -> tuple:
+    """Import a single test module in a subprocess (for ProcessPoolExecutor).
+
+    This runs in a separate process, so it can't populate the main process's
+    sys.modules. Instead, it ensures the .pyc file is compiled and cached.
+
+    Returns: (file_path, success, error_message)
+    """
+    try:
+        # Convert file path to module name
+        path_obj = Path(file_path)
+        root_obj = Path(root_path)
+
+        # Get relative path from root
+        try:
+            rel_path = path_obj.relative_to(root_obj)
+        except ValueError:
+            rel_path = path_obj
+
+        # Convert path to module name (remove .py and replace / with .)
+        module_name = str(rel_path.with_suffix('')).replace(os.sep, '.')
+
+        # Import the module to compile .pyc
+        # This happens in subprocess, but .pyc file is written to disk
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
+        if spec and spec.loader:
+            module = importlib.util.module_from_spec(spec)
+            # Don't add to sys.modules in subprocess - it won't help main process
+            spec.loader.exec_module(module)
+            return (file_path, True, None)
+        else:
+            return (file_path, False, "Could not create module spec")
+
+    except Exception as e:
+        return (file_path, False, str(e))
+
+
 def _parallel_import_modules(file_paths: Set[str], config: Config):
     """Pre-import test modules in parallel to warm the cache.
 
-    This pre-imports modules before pytest's collection phase, so when pytest
-    calls importtestmodule(), the modules are already in sys.modules.
+    Uses either ThreadPoolExecutor (shares sys.modules, limited by GIL)
+    or ProcessPoolExecutor (true parallelism, compiles .pyc in parallel).
     """
     import time
 
@@ -235,22 +278,37 @@ def _parallel_import_modules(file_paths: Set[str], config: Config):
     if workers is None:
         workers = os.cpu_count() or 4
 
+    # Check if using processes or threads
+    use_processes = getattr(config.option, 'use_processes', False)
+
     root_path = str(config.rootpath)
 
+    executor_type = "processes" if use_processes else "threads"
     if config.option.verbose >= 1:
-        print(f"\nFastCollect: Parallel import ({workers} workers) - importing {len(file_paths)} modules...",
+        print(f"\nFastCollect: Parallel import ({workers} {executor_type}) - importing {len(file_paths)} modules...",
               file=sys.stderr, end=" ", flush=True)
 
     start_time = time.time()
     success_count = 0
     error_count = 0
 
-    # Use ThreadPoolExecutor for parallel imports
-    # Even with GIL, I/O operations (reading .py/.pyc files) can benefit
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    # Choose executor type
+    if use_processes:
+        # ProcessPoolExecutor: True parallelism, bypasses GIL
+        # Each process compiles .pyc independently
+        # Main process benefits from cached .pyc files
+        executor_class = ProcessPoolExecutor
+        import_func = _import_test_module_process
+    else:
+        # ThreadPoolExecutor: Limited by GIL, but shares sys.modules
+        # Imports stay in main process's sys.modules
+        executor_class = ThreadPoolExecutor
+        import_func = _import_test_module
+
+    with executor_class(max_workers=workers) as executor:
         # Submit all import tasks
         future_to_path = {
-            executor.submit(_import_test_module, file_path, root_path): file_path
+            executor.submit(import_func, file_path, root_path): file_path
             for file_path in file_paths
         }
 
@@ -272,6 +330,41 @@ def _parallel_import_modules(file_paths: Set[str], config: Config):
         if error_count > 0:
             print(f"  Imported: {success_count}/{len(file_paths)} modules ({error_count} errors)",
                   file=sys.stderr)
+
+    # If using processes, need to import in main process to populate sys.modules
+    # The .pyc files are now cached, so this should be much faster
+    if use_processes and success_count > 0:
+        if config.option.verbose >= 1:
+            print(f"FastCollect: Loading modules into main process...", file=sys.stderr, end=" ", flush=True)
+
+        start_reload = time.time()
+        reload_count = 0
+
+        # Import in main process (fast now due to cached .pyc)
+        for file_path in file_paths:
+            try:
+                path_obj = Path(file_path)
+                root_obj = Path(root_path)
+                try:
+                    rel_path = path_obj.relative_to(root_obj)
+                except ValueError:
+                    rel_path = path_obj
+
+                module_name = str(rel_path.with_suffix('')).replace(os.sep, '.')
+
+                if module_name not in sys.modules:
+                    spec = importlib.util.spec_from_file_location(module_name, file_path)
+                    if spec and spec.loader:
+                        module = importlib.util.module_from_spec(spec)
+                        sys.modules[module_name] = module
+                        spec.loader.exec_module(module)
+                        reload_count += 1
+            except Exception:
+                pass  # Ignore errors in main process import
+
+        reload_elapsed = time.time() - start_reload
+        if config.option.verbose >= 1:
+            print(f"Done ({reload_elapsed:.2f}s, {reload_count} modules)", file=sys.stderr)
 
 
 def pytest_ignore_collect(collection_path, config):
