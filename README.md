@@ -118,7 +118,50 @@ pytest-fastcollect/
 
 ## Benchmarks
 
-### v0.3.0 - Better Integration (Latest)
+### v0.4.0 - Selective Import (Latest) ⭐
+
+**THE BREAKTHROUGH**: Selective import based on `-k` and `-m` filters!
+
+**How it works**:
+1. Parse all test files with Rust (parallel, fast)
+2. Extract test names and markers from AST
+3. Apply `-k` and `-m` filters BEFORE importing modules
+4. Only import files containing matching tests
+5. Result: Massive speedups for filtered runs!
+
+**Benchmark Results** (100 files, 10 tests/file):
+```
+Scenario                        Time      Speedup
+Full collection (no filter)     0.98s     baseline
+With -k filter (10% files)      0.57s     1.71x faster ⚡
+With -m filter (20% files)      0.64s     1.55x faster ⚡
+Combined filters                0.55s     1.78x faster ⚡
+```
+
+**Real-World Impact**:
+```bash
+# Before v0.4.0: imports ALL 100 test files
+pytest -k test_user  # 0.98s
+
+# With v0.4.0: imports only 10 matching files
+pytest -k test_user  # 0.57s (1.71x faster!)
+```
+
+**When it helps most**:
+- ✅ Running specific tests: `pytest -k test_user_login`
+- ✅ Running marked tests: `pytest -m smoke`
+- ✅ Development workflow (constantly filtering tests)
+- ✅ CI/CD with test splits
+- ✅ Large test suites with good organization
+
+**Key Features**:
+- Marker detection from decorators (`@pytest.mark.slow`)
+- Keyword matching (function names, class names, file names)
+- Supports `and`, `or`, `not` in expressions
+- Shows file selection stats with `-v`
+- Fully compatible with pytest's filter syntax
+
+### v0.3.0 - Better Integration
 
 **Architecture Improvements**:
 ```

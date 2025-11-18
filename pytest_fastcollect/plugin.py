@@ -13,12 +13,14 @@ from _pytest.nodes import Collector
 try:
     from .pytest_fastcollect import FastCollector
     from .cache import CollectionCache, CacheStats
+    from .filter import get_files_with_matching_tests
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
     FastCollector = None
     CollectionCache = None
     CacheStats = None
+    get_files_with_matching_tests = None
 
 
 def pytest_configure(config: Config):
@@ -65,7 +67,28 @@ def pytest_configure(config: Config):
         _cache_stats = None
 
     _collected_data = collected_data
-    _test_files_cache = set(collected_data.keys())
+
+    # Apply selective import filtering based on -k and -m options
+    keyword_expr = config.getoption("-k", default=None)
+    marker_expr = config.getoption("-m", default=None)
+
+    if keyword_expr or marker_expr:
+        # Only include files with tests matching the filter
+        _test_files_cache = get_files_with_matching_tests(
+            collected_data,
+            keyword_expr=keyword_expr,
+            marker_expr=marker_expr
+        )
+        if config.option.verbose >= 1:
+            total_files = len(collected_data)
+            filtered_files = len(_test_files_cache)
+            print(
+                f"FastCollect: Selective import - {filtered_files}/{total_files} files match filter",
+                file=sys.stderr
+            )
+    else:
+        # No filtering, collect all files
+        _test_files_cache = set(collected_data.keys())
 
 
 def pytest_collection_modifyitems(session: Session, config: Config, items: list):
