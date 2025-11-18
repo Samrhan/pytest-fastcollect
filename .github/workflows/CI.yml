@@ -168,13 +168,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      - name: Install pytest
+        run: pip install pytest
       - name: Build and install package
         uses: PyO3/maturin-action@v1
         with:
-          command: develop
-          args: --release
-      - name: Install pytest
-        run: pip install pytest
+          command: build
+          args: --release --out dist --find-interpreter
+      - name: Install built wheel
+        shell: bash
+        run: pip install dist/*.whl
       - name: Run tests
         run: pytest tests/ -v
       - name: Test CLI options
