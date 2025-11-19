@@ -44,6 +44,62 @@ pip install target/wheels/pytest_fastcollect-*.whl
 
 ## Usage
 
+### Should I Use This Plugin?
+
+Not sure if pytest-fastcollect will help your project? Run the built-in benchmark:
+
+```bash
+pytest --benchmark-collect
+```
+
+This will:
+- ⏱️  Measure collection time **with** and **without** the plugin
+- 📊 Analyze your project size and structure
+- 💡 Provide a clear **recommendation** with actionable advice
+- 🎯 Show expected time savings
+
+**Example output:**
+```
+======================================================================
+pytest-fastcollect Benchmark
+======================================================================
+
+Analyzing your test suite to determine if pytest-fastcollect is beneficial...
+
+📊 Project Stats:
+   Test files: 245
+   Test items: 1,892
+
+⚡ Benchmark 1: WITH pytest-fastcollect
+   Running collection with Rust acceleration... Done! (0.342s)
+
+🐌 Benchmark 2: WITHOUT pytest-fastcollect
+   Running standard pytest collection... Done! (1.567s)
+
+======================================================================
+📈 Results
+======================================================================
+
+⏱️  Collection Time:
+   Standard pytest:      1.567s
+   With fastcollect:     0.342s
+   Time saved:           1.225s
+   Speedup:              4.58x
+
+💡 Recommendation:
+   ⭐⭐⭐ EXCELLENT
+   pytest-fastcollect provides SIGNIFICANT speedup (4.6x faster)!
+   ✅ Highly recommended for your project.
+   ✅ You'll save 1.2s on every test run.
+
+📦 Project Size Analysis:
+   Your project is MEDIUM-LARGE (245 files).
+   ✅ Good fit for pytest-fastcollect.
+======================================================================
+```
+
+### Basic Usage
+
 Once installed, the plugin is automatically activated for all pytest runs:
 
 ```bash
@@ -61,6 +117,9 @@ pytest --fastcollect-clear-cache --collect-only
 
 # Disable caching (always parse)
 pytest --no-fastcollect-cache
+
+# Benchmark: Test if pytest-fastcollect is beneficial for your project
+pytest --benchmark-collect
 
 # Experimental: Parallel module import (2.33x faster on pytest itself!)
 pytest --parallel-import --parallel-workers=4
@@ -84,7 +143,7 @@ python benchmark_parallel.py     # Test parallel import performance
 - `--fastcollect-cache`: Enable incremental caching (default: True)
 - `--no-fastcollect-cache`: Disable caching and parse all files
 - `--fastcollect-clear-cache`: Clear the cache before collection
-- `--benchmark-collect`: Benchmark collection time (fast vs standard)
+- `--benchmark-collect`: **[Recommended]** Benchmark to test if the plugin is beneficial for your project
 - `--parallel-import`: **[Experimental]** Pre-import modules in parallel (default: False)
 - `--parallel-workers=N`: Number of parallel import workers (default: CPU count)
 - `--daemon-start`: **[Production-Ready]** Start collection daemon for instant re-collection
@@ -569,6 +628,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - ✅ **Testing**: Comprehensive unit and integration tests for daemon
 - 📚 **Documentation**: Complete troubleshooting guide and best practices
 - 🎯 **Health Endpoint**: New `--daemon-health` command for diagnostics
+- 📏 **Benchmark Tool**: New `--benchmark-collect` to test if plugin is beneficial for your project
 
 #### v0.3.0
 - 🏗️ **Better Integration**: Refactored plugin architecture for cleaner code
