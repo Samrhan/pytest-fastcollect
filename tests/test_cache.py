@@ -215,13 +215,25 @@ class TestCollectionCacheSave:
     @pytest.mark.unit
     def test_save_cache_handles_write_errors(self):
         """Test save_cache handles write errors gracefully."""
+        import unittest.mock as mock
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Use a path that can't be written to
-            cache_dir = Path("/nonexistent/invalid/path")
+            cache_dir = Path(tmpdir)
             cache = CollectionCache(cache_dir)
 
-            # Should not crash
-            cache.save_cache()
+            # Add some data
+            cache.cache_data["/test.py"] = {
+                "mtime": 1234567890.0,
+                "items": []
+            }
+
+            # Mock the file open to raise an IOError
+            with mock.patch('builtins.open', side_effect=IOError("Mocked write error")):
+                # Should not crash, should handle the error gracefully
+                cache.save_cache()
+
+            # Verify cache still has data (wasn't cleared)
+            assert len(cache.cache_data) == 1
 
 
 class TestCollectionCacheGetData:
