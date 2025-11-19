@@ -740,7 +740,18 @@ class CollectionDaemon:
         # Clean up socket files/resources using strategy
         self.socket_strategy.cleanup()
 
-        self.logger.info(f"Daemon stopped (uptime: {self._format_uptime(time.time() - self.start_time)})")
+        uptime_msg = f"Daemon stopped (uptime: {self._format_uptime(time.time() - self.start_time)})"
+        self.logger.info(uptime_msg)
+
+        # Close all logging handlers (important for Windows to release file locks)
+        for handler in self.logger.handlers[:]:
+            try:
+                handler.close()
+                self.logger.removeHandler(handler)
+            except Exception as e:
+                # Can't log this since we're closing the logger
+                pass
+
         print(f"Daemon: Stopped", flush=True)
 
 
