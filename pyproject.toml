@@ -27,3 +27,21 @@ fastcollect = "pytest_fastcollect.plugin"
 dev = [
     "pytest-benchmark>=4.0.0",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "smoke: marks tests as smoke tests for quick validation",
+    "regression: marks tests as regression tests",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
