@@ -346,6 +346,14 @@ class TestDaemonIntegration:
             daemon.running = False
             time.sleep(0.2)
 
+            # Close logging handlers explicitly (important for Windows file locks)
+            for handler in daemon.logger.handlers[:]:
+                try:
+                    handler.close()
+                    daemon.logger.removeHandler(handler)
+                except Exception:
+                    pass
+
     def test_client_server_status(self, daemon_server):
         """Test client-server status request."""
         client = DaemonClient(daemon_server)
