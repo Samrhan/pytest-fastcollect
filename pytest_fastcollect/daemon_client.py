@@ -376,7 +376,8 @@ def get_socket_path(root_path: str) -> str:
 
     # Resolve to absolute path for consistency
     resolved_path = str(Path(root_path).resolve())
-    path_hash = hashlib.md5(resolved_path.encode()).hexdigest()[:8]
+    # MD5 used only for socket path generation, not security
+    path_hash = hashlib.md5(resolved_path.encode(), usedforsecurity=False).hexdigest()[:8]
 
     # Store in temp directory
     socket_path = f"/tmp/pytest-fastcollect-{path_hash}.sock"
