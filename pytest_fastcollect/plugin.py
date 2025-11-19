@@ -21,6 +21,7 @@ try:
         DaemonClient, get_socket_path, save_daemon_pid,
         get_daemon_pid, stop_daemon, is_process_running
     )
+    from .constants import DEFAULT_CPU_COUNT, BENCHMARK_TIMEOUT_SECONDS
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
@@ -350,7 +351,7 @@ def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int,
     # Get number of workers
     workers = getattr(config.option, 'parallel_workers', None)
     if workers is None:
-        workers = os.cpu_count() or 4
+        workers = os.cpu_count() or DEFAULT_CPU_COUNT
 
     root_path = str(config.rootpath)
 
@@ -471,7 +472,7 @@ def _run_benchmark(config: Config) -> None:
             [sys_module.executable, "-m", "pytest", "--collect-only", "--no-fast-collect", "-q"],
             cwd=root_path,
             capture_output=True,
-            timeout=120  # 2 minute timeout
+            timeout=BENCHMARK_TIMEOUT_SECONDS
         )
 
         # Parse the output to get timing (pytest doesn't show timing in --collect-only by default)
@@ -485,7 +486,7 @@ def _run_benchmark(config: Config) -> None:
                 [sys_module.executable, "-m", "pytest", "--collect-only", "--no-fast-collect", "-q"],
                 cwd=root_path,
                 capture_output=True,
-                timeout=120
+                timeout=BENCHMARK_TIMEOUT_SECONDS
             )
             slow_time = time.time() - start
 
