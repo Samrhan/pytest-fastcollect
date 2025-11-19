@@ -802,11 +802,11 @@ def start_daemon(root_path: str, socket_path: str, file_paths: Optional[Set[str]
 
 
 def start_daemon_background(root_path: str, socket_path: str, file_paths: Optional[Set[str]] = None) -> int:
-    """Start daemon in background process using double-fork technique.
+    """Start daemon in background process (cross-platform).
 
     Args:
         root_path: Root directory for test modules
-        socket_path: Path to Unix domain socket
+        socket_path: Path to Unix domain socket / TCP socket
         file_paths: Optional set of files to pre-import
 
     Returns:
@@ -816,11 +816,23 @@ def start_daemon_background(root_path: str, socket_path: str, file_paths: Option
         DaemonError: If daemon fails to start
 
     Note:
-        - Uses double-fork to properly daemonize
+        - On Unix: Uses double-fork to properly daemonize
+        - On Windows: Uses subprocess with detached process
         - Redirects output to daemon.log
-        - Detaches from controlling terminal
         - Safe from zombie processes
     """
+    import platform
+
+    if platform.system() == 'Windows':
+        # Windows: Use subprocess with CREATE_NEW_PROCESS_GROUP
+        return _start_daemon_windows(root_path, socket_path, file_paths)
+    else:
+        # Unix/Linux/macOS: Use traditional double-fork
+        return _start_daemon_unix(root_path, socket_path, file_paths)
+
+
+def _start_daemon_unix(root_path: str, socket_path: str, file_paths: Optional[Set[str]] = None) -> int:
+    """Start daemon on Unix systems using double-fork."""
     try:
         # First fork: Create child process
         pid = os.fork()
@@ -871,6 +883,56 @@ def start_daemon_background(root_path: str, socket_path: str, file_paths: Option
 
     except OSError as e:
         raise DaemonError(f"Failed to fork daemon process: {e}")
+
+
+def _start_daemon_windows(root_path: str, socket_path: str, file_paths: Optional[Set[str]] = None) -> int:
+    """Start daemon on Windows using subprocess with detached process."""
+    import subprocess
+
+    try:
+        # Prepare log file
+        log_dir = Path(socket_path).parent
+        log_file = log_dir / "daemon.log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Prepare command to run daemon in subprocess
+        # Use -m to run as module to ensure proper imports
+        cmd = [
+            sys.executable,
+            '-c',
+            f'''
+import sys
+sys.path.insert(0, {repr(str(Path(__file__).parent.parent))})
+from pytest_fastcollect.daemon import start_daemon
+start_daemon({repr(root_path)}, {repr(socket_path)}, {repr(file_paths) if file_paths else None}, log_file={repr(str(log_file))})
+'''
+        ]
+
+        # Open log file for output redirection
+        log_handle = open(log_file, 'a')
+
+        # Start detached process on Windows
+        # CREATE_NEW_PROCESS_GROUP: 0x00000200
+        # DETACHED_PROCESS: 0x00000008
+        creation_flags = 0x00000200 | 0x00000008
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=log_handle,
+            stderr=log_handle,
+            stdin=subprocess.DEVNULL,
+            creationflags=creation_flags,
+            close_fds=False  # Windows doesn't support close_fds with redirection
+        )
+
+        # Give daemon time to start
+        time.sleep(DAEMON_LOOP_PAUSE_SECONDS * 2)  # Windows needs a bit more time
+
+        # Return the PID
+        return process.pid
+
+    except Exception as e:
+        raise DaemonError(f"Failed to start daemon on Windows: {e}")
 
 
 if __name__ == "__main__":

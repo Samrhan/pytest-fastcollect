@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `filter.py:59` now checks `class is not None` before adding to search text
   - Prevents `TypeError: expected str instance, NoneType found`
   - Discovered by property-based tests!
+- 🪟 **Windows Daemon Support**: Fixed daemon failing on Windows with `AttributeError: module 'os' has no attribute 'fork'`
+  - Added cross-platform daemon launching
+  - Unix/Linux/macOS: Uses double-fork technique (existing behavior)
+  - Windows: Uses subprocess with CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS flags
+  - Daemon now works on all platforms
 
 ### Changed
 - ⬆️ **Python 3.9+ Required**: Dropped Python 3.8 support, now requires Python 3.9+
