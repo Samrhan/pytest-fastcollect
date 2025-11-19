@@ -102,15 +102,19 @@ class CollectionDaemon:
 
         # Determine log file path
         if log_file is None:
-            log_dir = Path(self.socket_path).parent
+            # Ensure we use absolute paths for reliable parent directory resolution
+            socket_path_abs = Path(self.socket_path).resolve()
+            log_dir = socket_path_abs.parent
             log_file = str(log_dir / "daemon.log")
 
-        # Get log directory (works whether log_file was provided or generated)
-        log_dir = Path(log_file).parent
+        # Get log directory from final log file path (use resolve() for absolute path)
+        log_file_abs = Path(log_file).resolve()
+        log_dir = log_file_abs.parent
 
         # Ensure log directory exists
         try:
-            log_dir.mkdir(parents=True, exist_ok=True)
+            if not log_dir.exists():
+                log_dir.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             # If we can't create the log directory, fall back to a safe location
             import tempfile
