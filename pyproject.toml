@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pytest-fastcollect"
-version = "0.4.0"
+version = "0.5.0"
 description = "A high-performance pytest plugin that replaces test collection with a Rust-based implementation"
 requires-python = ">=3.8"
 dependencies = [

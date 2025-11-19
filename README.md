@@ -558,7 +558,19 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ### Changelog
 
-#### v0.3.0 (Current)
+#### v0.5.0 (Current)
+- 🚀 **Production-Ready Daemon**: Collection daemon upgraded from experimental to production-ready
+- 🔒 **Security**: Comprehensive input validation and path checking to prevent attacks
+- 📊 **Monitoring**: Health checks, metrics tracking, and detailed diagnostics
+- 📝 **Logging**: Structured logging with automatic rotation (10MB files, 5 backups)
+- 🔄 **Reliability**: Automatic retries with exponential backoff
+- 🛡️ **Error Handling**: Comprehensive error handling and recovery mechanisms
+- 🔗 **Connection Management**: Rate limiting, timeouts, and proper resource cleanup
+- ✅ **Testing**: Comprehensive unit and integration tests for daemon
+- 📚 **Documentation**: Complete troubleshooting guide and best practices
+- 🎯 **Health Endpoint**: New `--daemon-health` command for diagnostics
+
+#### v0.3.0
 - 🏗️ **Better Integration**: Refactored plugin architecture for cleaner code
 - ⚡ Early initialization in `pytest_configure` instead of lazy loading
 - 🔧 Simplified `pytest_ignore_collect` hook to only use cached data
