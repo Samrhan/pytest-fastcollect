@@ -69,7 +69,11 @@ def pytest_configure(config: Config):
                 status = client.get_status()
                 print(f"Daemon: RUNNING", file=sys.stderr)
                 print(f"  PID: {status.get('pid')}", file=sys.stderr)
-                print(f"  Uptime: {status.get('uptime_human', f\"{status.get('uptime', 0):.1f}s\")}", file=sys.stderr)
+                # Get uptime, preferring human-readable format
+                uptime_display = status.get('uptime_human')
+                if not uptime_display:
+                    uptime_display = f"{status.get('uptime', 0):.1f}s"
+                print(f"  Uptime: {uptime_display}", file=sys.stderr)
                 print(f"  Cached modules: {status.get('cached_modules', 0)}", file=sys.stderr)
                 metrics = status.get('metrics', {})
                 if metrics:
