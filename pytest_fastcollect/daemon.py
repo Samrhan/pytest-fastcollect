@@ -467,7 +467,7 @@ class CollectionDaemon:
                 "error": str(e)
             }
 
-    def handle_client(self, client_socket):
+    def handle_client(self, client_socket: socket.socket) -> None:
         """Handle a client connection with comprehensive error handling and metrics.
 
         Args:
@@ -634,7 +634,7 @@ class CollectionDaemon:
             except:
                 pass
 
-    def start(self, file_paths: Optional[Set[str]] = None):
+    def start(self, file_paths: Optional[Set[str]] = None) -> None:
         """Start the daemon server with comprehensive error handling.
 
         Args:
@@ -730,7 +730,7 @@ class CollectionDaemon:
             # Cleanup
             self._cleanup()
 
-    def _cleanup(self):
+    def _cleanup(self) -> None:
         """Clean up daemon resources."""
         self.logger.info("Cleaning up daemon resources")
 
@@ -760,7 +760,7 @@ class CollectionDaemon:
         print(f"Daemon: Stopped", flush=True)
 
 
-def start_daemon(root_path: str, socket_path: str, file_paths: Optional[Set[str]] = None, log_file: Optional[str] = None):
+def start_daemon(root_path: str, socket_path: str, file_paths: Optional[Set[str]] = None, log_file: Optional[str] = None) -> None:
     """Start daemon in foreground (for testing/debugging).
 
     Args:

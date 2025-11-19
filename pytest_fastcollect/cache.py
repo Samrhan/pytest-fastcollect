@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass, asdict
 
 
@@ -44,7 +44,7 @@ class CollectionCache:
         self.stats = CacheStats()
         self._load_cache()
 
-    def _load_cache(self):
+    def _load_cache(self) -> None:
         """Load cache from disk if it exists."""
         if self.cache_file.exists():
             try:
@@ -61,7 +61,7 @@ class CollectionCache:
                 # Corrupted cache, start fresh
                 self.cache_data = {}
 
-    def save_cache(self):
+    def save_cache(self) -> None:
         """Save cache to disk."""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -104,7 +104,7 @@ class CollectionCache:
             self.stats.cache_misses += 1
             return None
 
-    def update_cache(self, file_path: str, mtime: float, items: list):
+    def update_cache(self, file_path: str, mtime: float, items: List[Any]) -> None:
         """
         Update cache with newly parsed data.
 
@@ -119,7 +119,7 @@ class CollectionCache:
         }
         self.stats.files_parsed += 1
 
-    def merge_with_rust_data(self, rust_metadata: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, list], bool]:
+    def merge_with_rust_data(self, rust_metadata: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, List[Any]], bool]:
         """
         Merge Rust-collected metadata with cache.
 
@@ -160,7 +160,7 @@ class CollectionCache:
 
         return merged_data, cache_updated
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear the entire cache."""
         self.cache_data = {}
         self.stats = CacheStats()
