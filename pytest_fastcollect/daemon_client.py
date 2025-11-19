@@ -17,6 +17,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
+from .socket_strategy import create_socket_strategy
+
 # Configure logger
 logger = logging.getLogger('pytest_fastcollect.daemon_client')
 
@@ -66,18 +68,8 @@ class DaemonClient:
         if not isinstance(socket_path, str) or not socket_path:
             raise ValidationError("Invalid socket path")
 
-        # Detect socket type (TCP vs Unix)
-        self.use_tcp = not hasattr(socket, 'AF_UNIX')
-        self.tcp_port = None
-        if self.use_tcp:
-            # Try to read port from file
-            port_file = socket_path + ".port"
-            if os.path.exists(port_file):
-                try:
-                    with open(port_file, 'r') as f:
-                        self.tcp_port = int(f.read().strip())
-                except Exception as e:
-                    logger.warning(f"Failed to read port file: {e}")
+        # Create socket strategy for cross-platform support
+        self.socket_strategy = create_socket_strategy(socket_path)
 
     def is_daemon_running(self) -> bool:
         """Check if daemon is running and responsive.
@@ -232,25 +224,10 @@ class DaemonClient:
         Raises:
             Various socket exceptions that will be caught by send_request
         """
-        # Create socket (Unix or TCP depending on platform)
-        if self.use_tcp:
-            if self.tcp_port is None:
-                raise ConnectionError("TCP port not available. Is daemon running?")
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
-            address = ('127.0.0.1', self.tcp_port)
-        else:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
-            address = self.socket_path
+        # Create and connect socket using strategy
+        sock = self.socket_strategy.create_client_socket(timeout)
 
         try:
-            # Connect to daemon
-            sock.connect(address)
-            if self.use_tcp:
-                logger.debug(f"Connected to daemon at 127.0.0.1:{self.tcp_port}")
-            else:
-                logger.debug(f"Connected to daemon at {self.socket_path}")
 
             # Send request
             request_data = json.dumps(request).encode('utf-8')

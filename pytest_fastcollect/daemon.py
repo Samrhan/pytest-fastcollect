@@ -29,6 +29,8 @@ import threading
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
+from .socket_strategy import SocketStrategy, create_socket_strategy
+
 
 # Configuration constants
 MAX_REQUEST_SIZE = 10 * 1024 * 1024  # 10MB max request size
@@ -36,9 +38,6 @@ MAX_CONNECTIONS = 10  # Maximum concurrent connections
 SOCKET_TIMEOUT = 1.0  # Socket accept timeout
 REQUEST_TIMEOUT = 30.0  # Maximum time to process a request
 HEALTH_CHECK_INTERVAL = 60.0  # Health check interval in seconds
-
-# Check if Unix sockets are available (not on older Windows)
-HAS_UNIX_SOCKETS = hasattr(socket, 'AF_UNIX')
 
 
 class DaemonError(Exception):
@@ -77,9 +76,8 @@ class CollectionDaemon:
         self.socket = None
         self.start_time = time.time()
 
-        # Socket type tracking for cross-platform support
-        self.use_tcp = not HAS_UNIX_SOCKETS
-        self.tcp_port = None  # Will be set if using TCP
+        # Socket strategy for cross-platform support
+        self.socket_strategy = create_socket_strategy(socket_path)
 
         # Metrics tracking
         self.total_requests = 0
@@ -92,8 +90,7 @@ class CollectionDaemon:
         # Setup logging
         self.logger = self._setup_logging(log_file)
         self.logger.info(f"Initializing daemon for root path: {self.root_path}")
-        if self.use_tcp:
-            self.logger.info("Using TCP sockets (Unix sockets not available)")
+        self.logger.info(f"Socket strategy: {self.socket_strategy.__class__.__name__}")
 
     def _setup_logging(self, log_file: Optional[str] = None) -> logging.Logger:
         """Setup structured logging with rotation."""
@@ -676,36 +673,10 @@ class CollectionDaemon:
                     flush=True
                 )
 
-            # Create socket (Unix or TCP depending on platform)
+            # Create socket using strategy pattern
             try:
-                if self.use_tcp:
-                    # Use TCP socket on localhost (Windows compatibility)
-                    self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    # Bind to localhost with automatic port selection
-                    self.socket.bind(('127.0.0.1', 0))
-                    self.tcp_port = self.socket.getsockname()[1]
-                    self.socket.listen(MAX_CONNECTIONS)
-
-                    # Save port to file so clients can connect
-                    port_file = self.socket_path + ".port"
-                    with open(port_file, 'w') as f:
-                        f.write(str(self.tcp_port))
-                    self.logger.info(f"TCP socket bound to 127.0.0.1:{self.tcp_port}")
-                else:
-                    # Use Unix domain socket
-                    self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    self.socket.bind(self.socket_path)
-                    self.socket.listen(MAX_CONNECTIONS)
-
-                    # Make socket accessible (read/write for all users)
-                    try:
-                        os.chmod(self.socket_path, 0o666)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to set socket permissions: {e}")
-
-                    self.logger.info(f"Unix socket at {self.socket_path}")
-
+                self.socket = self.socket_strategy.create_server_socket()
+                self.socket.listen(MAX_CONNECTIONS)
             except OSError as e:
                 self.logger.error(f"Failed to create socket: {e}")
                 raise DaemonError(f"Cannot create socket: {e}")
@@ -713,10 +684,7 @@ class CollectionDaemon:
             self.running = True
             self.logger.info(f"Daemon started successfully (PID {os.getpid()})")
             print(f"Daemon: Started (PID {os.getpid()})", flush=True)
-            if self.use_tcp:
-                print(f"Daemon: TCP socket at 127.0.0.1:{self.tcp_port}", flush=True)
-            else:
-                print(f"Daemon: Socket at {self.socket_path}", flush=True)
+            print(f"Daemon: {self.socket_strategy.get_connection_info()}", flush=True)
             print(f"Daemon: Ready for instant collection requests!", flush=True)
 
             # Accept connections
@@ -769,23 +737,8 @@ class CollectionDaemon:
             except Exception as e:
                 self.logger.error(f"Error closing socket: {e}")
 
-        # Remove socket file (Unix sockets only)
-        if not self.use_tcp and os.path.exists(self.socket_path):
-            try:
-                os.remove(self.socket_path)
-                self.logger.debug(f"Socket file removed: {self.socket_path}")
-            except Exception as e:
-                self.logger.error(f"Error removing socket file: {e}")
-
-        # Remove port file (TCP mode only)
-        if self.use_tcp:
-            port_file = self.socket_path + ".port"
-            if os.path.exists(port_file):
-                try:
-                    os.remove(port_file)
-                    self.logger.debug(f"Port file removed: {port_file}")
-                except Exception as e:
-                    self.logger.error(f"Error removing port file: {e}")
+        # Clean up socket files/resources using strategy
+        self.socket_strategy.cleanup()
 
         self.logger.info(f"Daemon stopped (uptime: {self._format_uptime(time.time() - self.start_time)})")
         print(f"Daemon: Stopped", flush=True)
