@@ -80,9 +80,10 @@ class UnixSocketStrategy(SocketStrategy):
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket.bind(self.socket_path)
 
-        # Make socket accessible (read/write for all users)
+        # Make socket accessible (read/write for owner and group only)
+        # Using 0o660 instead of 0o666 for better security
         try:
-            os.chmod(self.socket_path, 0o666)
+            os.chmod(self.socket_path, 0o660)
         except Exception as e:
             logger.warning(f"Failed to set socket permissions: {e}")
 

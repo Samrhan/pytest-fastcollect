@@ -4,7 +4,7 @@ import os
 import sys
 import importlib.util
 from pathlib import Path
-from typing import List, Optional, Any, Set
+from typing import List, Optional, Any, Set, Tuple, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytest
 from _pytest.python import Module, Class, Function
@@ -21,6 +21,7 @@ try:
         DaemonClient, get_socket_path, save_daemon_pid,
         get_daemon_pid, stop_daemon, is_process_running
     )
+    from .constants import DEFAULT_CPU_COUNT, BENCHMARK_TIMEOUT_SECONDS
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
@@ -33,7 +34,7 @@ except ImportError:
     get_socket_path = None
 
 
-def pytest_configure(config: Config):
+def pytest_configure(config: Config) -> None:
     """Register the plugin."""
     global _test_files_cache, _collection_cache, _cache_stats, _collected_data
 
@@ -190,7 +191,7 @@ def pytest_configure(config: Config):
         _parallel_import_modules(_test_files_cache, config)
 
 
-def pytest_collection_modifyitems(session: Session, config: Config, items: list):
+def pytest_collection_modifyitems(session: Session, config: Config, items: List[Any]) -> None:
     """Modify collected items - this is called AFTER collection."""
     # This is called after collection, so it's too late to optimize
     pass
@@ -198,7 +199,7 @@ def pytest_collection_modifyitems(session: Session, config: Config, items: list)
 
 
 
-def pytest_addoption(parser):
+def pytest_addoption(parser: Any) -> None:
     """Add command-line options."""
     group = parser.getgroup('fastcollect')
     group.addoption(
@@ -275,7 +276,7 @@ def pytest_addoption(parser):
     )
 
 
-def pytest_report_header(config: Config):
+def pytest_report_header(config: Config) -> Optional[str]:
     """Add information to the pytest header."""
     if RUST_AVAILABLE:
         from . import get_version
@@ -298,7 +299,7 @@ def _get_cache_dir(config: Config) -> Path:
     return cache_dir
 
 
-def _import_test_module(file_path: str, root_path: str) -> tuple:
+def _import_test_module(file_path: str, root_path: str) -> Tuple[str, bool, Optional[str]]:
     """Import a single test module.
 
     Returns: (file_path, success, error_message)
@@ -336,7 +337,7 @@ def _import_test_module(file_path: str, root_path: str) -> tuple:
         return (file_path, False, str(e))
 
 
-def _parallel_import_modules(file_paths: Set[str], config: Config):
+def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int, int]:
     """Pre-import test modules in parallel to warm the cache.
 
     This pre-imports modules before pytest's collection phase, so when pytest
@@ -350,7 +351,7 @@ def _parallel_import_modules(file_paths: Set[str], config: Config):
     # Get number of workers
     workers = getattr(config.option, 'parallel_workers', None)
     if workers is None:
-        workers = os.cpu_count() or 4
+        workers = os.cpu_count() or DEFAULT_CPU_COUNT
 
     root_path = str(config.rootpath)
 
@@ -391,7 +392,7 @@ def _parallel_import_modules(file_paths: Set[str], config: Config):
                   file=sys.stderr)
 
 
-def pytest_ignore_collect(collection_path, config):
+def pytest_ignore_collect(collection_path: Any, config: Config) -> Optional[bool]:
     """Called to determine whether to ignore a file/directory during collection.
 
     Uses Rust-parsed metadata from pytest_configure to efficiently filter files.
@@ -420,7 +421,7 @@ def pytest_ignore_collect(collection_path, config):
     return None
 
 
-def _run_benchmark(config: Config):
+def _run_benchmark(config: Config) -> None:
     """Run benchmark comparing fast collect vs standard pytest collection.
 
     This measures collection time with and without the plugin and provides
@@ -471,7 +472,7 @@ def _run_benchmark(config: Config):
             [sys_module.executable, "-m", "pytest", "--collect-only", "--no-fast-collect", "-q"],
             cwd=root_path,
             capture_output=True,
-            timeout=120  # 2 minute timeout
+            timeout=BENCHMARK_TIMEOUT_SECONDS
         )
 
         # Parse the output to get timing (pytest doesn't show timing in --collect-only by default)
@@ -485,7 +486,7 @@ def _run_benchmark(config: Config):
                 [sys_module.executable, "-m", "pytest", "--collect-only", "--no-fast-collect", "-q"],
                 cwd=root_path,
                 capture_output=True,
-                timeout=120
+                timeout=BENCHMARK_TIMEOUT_SECONDS
             )
             slow_time = time.time() - start
 
@@ -591,7 +592,7 @@ def _run_benchmark(config: Config):
     print("=" * 70 + "\n", file=sys.stderr)
 
 
-def pytest_collection_finish(session: Session):
+def pytest_collection_finish(session: Session) -> None:
     """Called after collection has been performed and modified."""
     global _cache_stats
 

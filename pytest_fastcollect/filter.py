@@ -1,13 +1,13 @@
 """Test filtering logic for selective import optimization."""
 
 import re
-from typing import Dict, List, Set, Any
+from typing import Dict, List, Set, Any, Optional
 
 
 class TestFilter:
     """Filter tests based on pytest's -k and -m options."""
 
-    def __init__(self, keyword_expr: str = None, marker_expr: str = None):
+    def __init__(self, keyword_expr: Optional[str] = None, marker_expr: Optional[str] = None):
         """Initialize filter with keyword and marker expressions.
 
         Args:
@@ -151,8 +151,8 @@ class TestFilter:
 
 def filter_collected_data(
     collected_data: Dict[str, List[Dict[str, Any]]],
-    keyword_expr: str = None,
-    marker_expr: str = None
+    keyword_expr: Optional[str] = None,
+    marker_expr: Optional[str] = None
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Filter collected test data based on keyword and marker expressions.
 
@@ -184,8 +184,8 @@ def filter_collected_data(
 
 def get_files_with_matching_tests(
     collected_data: Dict[str, List[Dict[str, Any]]],
-    keyword_expr: str = None,
-    marker_expr: str = None
+    keyword_expr: Optional[str] = None,
+    marker_expr: Optional[str] = None
 ) -> Set[str]:
     """Get the set of file paths that contain matching tests.
 

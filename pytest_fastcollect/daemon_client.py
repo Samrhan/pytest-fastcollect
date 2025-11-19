@@ -18,6 +18,19 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
 from .socket_strategy import create_socket_strategy
+from .constants import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    HEALTH_CHECK_TIMEOUT_SECONDS,
+    HEALTH_CHECK_RETRIES,
+    STOP_COMMAND_TIMEOUT_SECONDS,
+    RETRY_BACKOFF_BASE_SECONDS,
+    STOP_COMMAND_SLEEP_SECONDS,
+    SIGTERM_WAIT_SECONDS,
+    SIGKILL_WAIT_SECONDS,
+    TASKLIST_TIMEOUT_SECONDS,
+    SOCKET_PATH_HASH_LENGTH,
+)
 
 # Configure logger
 logger = logging.getLogger('pytest_fastcollect.daemon_client')
@@ -54,7 +67,7 @@ class DaemonClient:
     - Detailed logging
     """
 
-    def __init__(self, socket_path: str, max_retries: int = 3):
+    def __init__(self, socket_path: str, max_retries: int = DEFAULT_MAX_RETRIES):
         """Initialize daemon client.
 
         Args:
@@ -84,8 +97,8 @@ class DaemonClient:
             # Try health check first
             response = self.send_request(
                 {"command": "health"},
-                timeout=1.0,
-                retries=1
+                timeout=HEALTH_CHECK_TIMEOUT_SECONDS,
+                retries=HEALTH_CHECK_RETRIES
             )
             return response.get("status") in ("healthy", "degraded")
         except:
@@ -93,8 +106,8 @@ class DaemonClient:
             try:
                 response = self.send_request(
                     {"command": "status"},
-                    timeout=1.0,
-                    retries=1
+                    timeout=HEALTH_CHECK_TIMEOUT_SECONDS,
+                    retries=HEALTH_CHECK_RETRIES
                 )
                 return response.get("status") == "running"
             except:
@@ -121,7 +134,7 @@ class DaemonClient:
     def send_request(
         self,
         request: Dict[str, Any],
-        timeout: float = 5.0,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         retries: Optional[int] = None
     ) -> Dict[str, Any]:
         """Send request to daemon and get response with automatic retries.
@@ -197,7 +210,7 @@ class DaemonClient:
             # Don't sleep after last attempt
             if attempt < retries:
                 # Exponential backoff: 0.1s, 0.2s, 0.4s, ...
-                sleep_time = 0.1 * (2 ** attempt)
+                sleep_time = RETRY_BACKOFF_BASE_SECONDS * (2 ** attempt)
                 logger.debug(f"Retrying in {sleep_time}s...")
                 time.sleep(sleep_time)
 
@@ -354,7 +367,7 @@ class DaemonClient:
             Daemon will clean up resources and exit
         """
         logger.info("Requesting daemon stop")
-        return self.send_request({"command": "stop"}, timeout=2.0)
+        return self.send_request({"command": "stop"}, timeout=STOP_COMMAND_TIMEOUT_SECONDS)
 
 
 def get_socket_path(root_path: str) -> str:
@@ -376,7 +389,8 @@ def get_socket_path(root_path: str) -> str:
 
     # Resolve to absolute path for consistency
     resolved_path = str(Path(root_path).resolve())
-    path_hash = hashlib.md5(resolved_path.encode()).hexdigest()[:8]
+    # MD5 used only for socket path generation, not security
+    path_hash = hashlib.md5(resolved_path.encode(), usedforsecurity=False).hexdigest()[:SOCKET_PATH_HASH_LENGTH]
 
     # Store in temp directory
     socket_path = f"/tmp/pytest-fastcollect-{path_hash}.sock"
@@ -472,7 +486,7 @@ def is_process_running(pid: int) -> bool:
                 ['tasklist', '/FI', f'PID eq {pid}'],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=TASKLIST_TIMEOUT_SECONDS
             )
             return str(pid) in result.stdout
         except Exception:
@@ -513,7 +527,7 @@ def stop_daemon(socket_path: str) -> bool:
     try:
         client = DaemonClient(socket_path, max_retries=1)
         client.stop()
-        time.sleep(0.5)
+        time.sleep(STOP_COMMAND_SLEEP_SECONDS)
         daemon_was_running = True
         logger.info("Daemon stopped via stop command")
 
@@ -531,14 +545,14 @@ def stop_daemon(socket_path: str) -> bool:
             # Send SIGTERM (graceful shutdown)
             logger.info(f"Sending SIGTERM to daemon PID {pid}")
             os.kill(pid, 15)
-            time.sleep(0.5)
+            time.sleep(SIGTERM_WAIT_SECONDS)
 
             # Check if still running
             if is_process_running(pid):
                 # Send SIGKILL (forced shutdown)
                 logger.warning(f"Daemon didn't stop, sending SIGKILL to PID {pid}")
                 os.kill(pid, 9)
-                time.sleep(0.2)
+                time.sleep(SIGKILL_WAIT_SECONDS)
 
             logger.info(f"Daemon process {pid} stopped")
         except OSError as e:

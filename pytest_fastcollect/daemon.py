@@ -30,14 +30,16 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
 from .socket_strategy import SocketStrategy, create_socket_strategy
-
-
-# Configuration constants
-MAX_REQUEST_SIZE = 10 * 1024 * 1024  # 10MB max request size
-MAX_CONNECTIONS = 10  # Maximum concurrent connections
-SOCKET_TIMEOUT = 1.0  # Socket accept timeout
-REQUEST_TIMEOUT = 30.0  # Maximum time to process a request
-HEALTH_CHECK_INTERVAL = 60.0  # Health check interval in seconds
+from .constants import (
+    MAX_REQUEST_SIZE_BYTES,
+    MAX_CONCURRENT_CONNECTIONS,
+    SOCKET_ACCEPT_TIMEOUT_SECONDS,
+    REQUEST_TIMEOUT_SECONDS,
+    HEALTH_CHECK_INTERVAL_SECONDS,
+    LOG_FILE_MAX_BYTES,
+    LOG_FILE_BACKUP_COUNT,
+    DAEMON_LOOP_PAUSE_SECONDS,
+)
 
 
 class DaemonError(Exception):
@@ -124,8 +126,8 @@ class CollectionDaemon:
         # Create rotating file handler (10MB max, keep 5 backups)
         handler = RotatingFileHandler(
             log_file,
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5
+            maxBytes=LOG_FILE_MAX_BYTES,
+            backupCount=LOG_FILE_BACKUP_COUNT
         )
 
         # Structured format with timestamps
@@ -467,7 +469,7 @@ class CollectionDaemon:
                 "error": str(e)
             }
 
-    def handle_client(self, client_socket):
+    def handle_client(self, client_socket: socket.socket) -> None:
         """Handle a client connection with comprehensive error handling and metrics.
 
         Args:
@@ -491,7 +493,7 @@ class CollectionDaemon:
             )
 
             # Check connection limit
-            if self.active_connections > MAX_CONNECTIONS:
+            if self.active_connections > MAX_CONCURRENT_CONNECTIONS:
                 self.logger.warning(f"Connection limit exceeded: {self.active_connections}")
                 error_response = {
                     "status": "error",
@@ -501,7 +503,7 @@ class CollectionDaemon:
                 return
 
             # Set socket timeout for reading
-            client_socket.settimeout(REQUEST_TIMEOUT)
+            client_socket.settimeout(REQUEST_TIMEOUT_SECONDS)
 
             # Receive request with size limit
             data = b""
@@ -512,13 +514,13 @@ class CollectionDaemon:
                 data += chunk
 
                 # Enforce size limit
-                if len(data) > MAX_REQUEST_SIZE:
+                if len(data) > MAX_REQUEST_SIZE_BYTES:
                     self.logger.warning(
                         f"Request size limit exceeded: {len(data)} bytes"
                     )
                     error_response = {
                         "status": "error",
-                        "error": f"Request too large (max {MAX_REQUEST_SIZE} bytes)"
+                        "error": f"Request too large (max {MAX_REQUEST_SIZE_BYTES} bytes)"
                     }
                     client_socket.sendall(json.dumps(error_response).encode('utf-8'))
                     return
@@ -634,7 +636,7 @@ class CollectionDaemon:
             except:
                 pass
 
-    def start(self, file_paths: Optional[Set[str]] = None):
+    def start(self, file_paths: Optional[Set[str]] = None) -> None:
         """Start the daemon server with comprehensive error handling.
 
         Args:
@@ -681,7 +683,7 @@ class CollectionDaemon:
             # Create socket using strategy pattern
             try:
                 self.socket = self.socket_strategy.create_server_socket()
-                self.socket.listen(MAX_CONNECTIONS)
+                self.socket.listen(MAX_CONCURRENT_CONNECTIONS)
             except OSError as e:
                 self.logger.error(f"Failed to create socket: {e}")
                 raise DaemonError(f"Cannot create socket: {e}")
@@ -695,7 +697,7 @@ class CollectionDaemon:
             # Accept connections
             while self.running:
                 try:
-                    self.socket.settimeout(SOCKET_TIMEOUT)
+                    self.socket.settimeout(SOCKET_ACCEPT_TIMEOUT_SECONDS)
                     client_socket, _ = self.socket.accept()
 
                     self.logger.debug("Accepted new connection")
@@ -716,7 +718,7 @@ class CollectionDaemon:
                     if self.running:
                         self.logger.error(f"Error accepting connection: {e}", exc_info=True)
                         # Continue running despite connection errors
-                        time.sleep(0.1)  # Brief pause to prevent tight loop
+                        time.sleep(DAEMON_LOOP_PAUSE_SECONDS)  # Brief pause to prevent tight loop
                     else:
                         break
 
@@ -730,7 +732,7 @@ class CollectionDaemon:
             # Cleanup
             self._cleanup()
 
-    def _cleanup(self):
+    def _cleanup(self) -> None:
         """Clean up daemon resources."""
         self.logger.info("Cleaning up daemon resources")
 
@@ -760,7 +762,7 @@ class CollectionDaemon:
         print(f"Daemon: Stopped", flush=True)
 
 
-def start_daemon(root_path: str, socket_path: str, file_paths: Optional[Set[str]] = None, log_file: Optional[str] = None):
+def start_daemon(root_path: str, socket_path: str, file_paths: Optional[Set[str]] = None, log_file: Optional[str] = None) -> None:
     """Start daemon in foreground (for testing/debugging).
 
     Args:
@@ -825,7 +827,7 @@ def start_daemon_background(root_path: str, socket_path: str, file_paths: Option
 
         if pid > 0:
             # Parent process - wait briefly to ensure child starts
-            time.sleep(0.1)
+            time.sleep(DAEMON_LOOP_PAUSE_SECONDS)
             return pid
 
         # Child process - become session leader

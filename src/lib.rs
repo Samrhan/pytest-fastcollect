@@ -437,3 +437,350 @@ fn pytest_fastcollect(m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn get_version() -> PyResult<String> {
     Ok(env!("CARGO_PKG_VERSION").to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    /// Helper function to create a temporary test file
+    fn create_test_file(dir: &TempDir, name: &str, content: &str) -> PathBuf {
+        let file_path = dir.path().join(name);
+        let mut file = fs::File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file_path
+    }
+
+    #[test]
+    fn test_is_test_function_with_test_prefix() {
+        let collector = FastCollector::new("/tmp".to_string());
+        assert!(collector.is_test_function("test_foo"));
+        assert!(collector.is_test_function("test_bar_baz"));
+        assert!(collector.is_test_function("test"));
+    }
+
+    #[test]
+    fn test_is_test_function_without_test_prefix() {
+        let collector = FastCollector::new("/tmp".to_string());
+        assert!(!collector.is_test_function("foo_test"));
+        assert!(!collector.is_test_function("my_function"));
+        assert!(!collector.is_test_function("Test"));
+    }
+
+    #[test]
+    fn test_is_test_class_with_test_prefix() {
+        let collector = FastCollector::new("/tmp".to_string());
+        assert!(collector.is_test_class("TestFoo"));
+        assert!(collector.is_test_class("TestBarBaz"));
+        assert!(collector.is_test_class("Test"));
+    }
+
+    #[test]
+    fn test_is_test_class_without_test_prefix() {
+        let collector = FastCollector::new("/tmp".to_string());
+        assert!(!collector.is_test_class("FooTest"));
+        assert!(!collector.is_test_class("MyClass"));
+        assert!(!collector.is_test_class("test_foo"));
+    }
+
+    #[test]
+    fn test_is_test_file_with_valid_patterns() {
+        let collector = FastCollector::new("/tmp".to_string());
+        let test_file = PathBuf::from("test_foo.py");
+        let test_file2 = PathBuf::from("bar_test.py");
+
+        assert!(collector.is_test_file(&test_file));
+        assert!(collector.is_test_file(&test_file2));
+    }
+
+    #[test]
+    fn test_is_test_file_with_invalid_patterns() {
+        let collector = FastCollector::new("/tmp".to_string());
+        let non_test = PathBuf::from("foo.py");
+        let non_python = PathBuf::from("test_foo.txt");
+        let no_extension = PathBuf::from("test_foo");
+
+        assert!(!collector.is_test_file(&non_test));
+        assert!(!collector.is_test_file(&non_python));
+        assert!(!collector.is_test_file(&no_extension));
+    }
+
+    #[test]
+    fn test_should_ignore_common_directories() {
+        let collector = FastCollector::new("/tmp".to_string());
+
+        assert!(collector.should_ignore(&PathBuf::from(".git")));
+        assert!(collector.should_ignore(&PathBuf::from("__pycache__")));
+        assert!(collector.should_ignore(&PathBuf::from(".tox")));
+        assert!(collector.should_ignore(&PathBuf::from(".venv")));
+        assert!(collector.should_ignore(&PathBuf::from("venv")));
+    }
+
+    #[test]
+    fn test_should_not_ignore_regular_directories() {
+        let collector = FastCollector::new("/tmp".to_string());
+
+        assert!(!collector.should_ignore(&PathBuf::from("tests")));
+        assert!(!collector.should_ignore(&PathBuf::from("src")));
+        assert!(!collector.should_ignore(&PathBuf::from("my_module")));
+    }
+
+    #[test]
+    fn test_matches_wildcard_exact_match() {
+        let collector = FastCollector::new("/tmp".to_string());
+
+        assert!(collector.matches_wildcard("test.py", "test.py"));
+        assert!(!collector.matches_wildcard("test.py", "other.py"));
+    }
+
+    #[test]
+    fn test_matches_wildcard_prefix() {
+        let collector = FastCollector::new("/tmp".to_string());
+
+        assert!(collector.matches_wildcard("test_foo.py", "test_*.py"));
+        assert!(collector.matches_wildcard("test_bar_baz.py", "test_*.py"));
+        assert!(!collector.matches_wildcard("foo_test.py", "test_*.py"));
+    }
+
+    #[test]
+    fn test_matches_wildcard_suffix() {
+        let collector = FastCollector::new("/tmp".to_string());
+
+        assert!(collector.matches_wildcard("foo_test.py", "*_test.py"));
+        assert!(collector.matches_wildcard("bar_baz_test.py", "*_test.py"));
+        assert!(!collector.matches_wildcard("test_foo.py", "*_test.py"));
+    }
+
+    #[test]
+    fn test_matches_wildcard_middle() {
+        let collector = FastCollector::new("/tmp".to_string());
+
+        assert!(collector.matches_wildcard("test_foo_bar.py", "test_*_bar.py"));
+        assert!(!collector.matches_wildcard("test_foo.py", "test_*_bar.py"));
+    }
+
+    #[test]
+    fn test_parse_simple_test_function() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = r#"
+def test_simple():
+    assert True
+"#;
+        let test_file = create_test_file(&temp_dir, "test_simple.py", content);
+
+        let items = collector.parse_test_file(&test_file).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "test_simple");
+        assert_eq!(items[0].class_name, None);
+    }
+
+    #[test]
+    fn test_parse_test_class() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = r#"
+class TestFoo:
+    def test_method(self):
+        pass
+"#;
+        let test_file = create_test_file(&temp_dir, "test_class.py", content);
+
+        let items = collector.parse_test_file(&test_file).unwrap();
+        // Should have both the class and the method
+        assert!(items.len() >= 1);
+
+        // Find the class item
+        let class_item = items.iter().find(|i| i.name == "TestFoo");
+        assert!(class_item.is_some());
+
+        // Find the method item
+        let method_item = items.iter().find(|i| i.name == "test_method");
+        assert!(method_item.is_some());
+        assert_eq!(method_item.unwrap().class_name, Some("TestFoo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_with_markers() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = r#"
+import pytest
+
+@pytest.mark.slow
+def test_slow():
+    pass
+
+@pytest.mark.smoke
+@pytest.mark.regression
+def test_combined():
+    pass
+"#;
+        let test_file = create_test_file(&temp_dir, "test_markers.py", content);
+
+        let items = collector.parse_test_file(&test_file).unwrap();
+
+        // Find slow test
+        let slow_test = items.iter().find(|i| i.name == "test_slow").unwrap();
+        assert!(slow_test.markers.contains(&"slow".to_string()));
+
+        // Find combined test
+        let combined_test = items.iter().find(|i| i.name == "test_combined").unwrap();
+        assert!(combined_test.markers.contains(&"smoke".to_string()));
+        assert!(combined_test.markers.contains(&"regression".to_string()));
+    }
+
+    #[test]
+    fn test_parse_empty_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = "";
+        let test_file = create_test_file(&temp_dir, "test_empty.py", content);
+
+        let items = collector.parse_test_file(&test_file).unwrap();
+        assert_eq!(items.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_non_test_functions() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = r#"
+def helper_function():
+    pass
+
+def another_helper():
+    pass
+"#;
+        let test_file = create_test_file(&temp_dir, "test_helpers.py", content);
+
+        let items = collector.parse_test_file(&test_file).unwrap();
+        assert_eq!(items.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_invalid_python() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = "this is not valid python syntax !!!";
+        let test_file = create_test_file(&temp_dir, "test_invalid.py", content);
+
+        let items = collector.parse_test_file(&test_file).unwrap();
+        // Should return empty vec on parse error, not crash
+        assert_eq!(items.len(), 0);
+    }
+
+    #[test]
+    fn test_find_test_files_in_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        // Create test files
+        create_test_file(&temp_dir, "test_one.py", "def test_one(): pass");
+        create_test_file(&temp_dir, "test_two.py", "def test_two(): pass");
+        create_test_file(&temp_dir, "helper.py", "def foo(): pass");
+
+        let test_files = collector.find_test_files();
+
+        assert_eq!(test_files.len(), 2);
+        assert!(test_files.iter().any(|p| p.file_name().unwrap() == "test_one.py"));
+        assert!(test_files.iter().any(|p| p.file_name().unwrap() == "test_two.py"));
+    }
+
+    #[test]
+    fn test_find_test_files_ignores_directories() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        // Create test file
+        create_test_file(&temp_dir, "test_one.py", "def test_one(): pass");
+
+        // Create ignored directory with test file
+        let ignored_dir = temp_dir.path().join("__pycache__");
+        fs::create_dir(&ignored_dir).unwrap();
+        let mut ignored_file = fs::File::create(ignored_dir.join("test_cached.py")).unwrap();
+        ignored_file.write_all(b"def test_cached(): pass").unwrap();
+
+        let test_files = collector.find_test_files();
+
+        // Should only find test_one.py, not test_cached.py
+        assert_eq!(test_files.len(), 1);
+        assert_eq!(test_files[0].file_name().unwrap(), "test_one.py");
+    }
+
+    #[test]
+    fn test_extract_markers_pytest_mark() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = r#"
+import pytest
+
+@pytest.mark.slow
+def test_foo():
+    pass
+"#;
+        let test_file = create_test_file(&temp_dir, "test_markers.py", content);
+        let items = collector.parse_test_file(&test_file).unwrap();
+
+        let test_item = items.iter().find(|i| i.name == "test_foo").unwrap();
+        assert_eq!(test_item.markers, vec!["slow"]);
+    }
+
+    #[test]
+    fn test_extract_markers_multiple() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = r#"
+import pytest
+
+@pytest.mark.slow
+@pytest.mark.integration
+@pytest.mark.smoke
+def test_foo():
+    pass
+"#;
+        let test_file = create_test_file(&temp_dir, "test_markers.py", content);
+        let items = collector.parse_test_file(&test_file).unwrap();
+
+        let test_item = items.iter().find(|i| i.name == "test_foo").unwrap();
+        assert!(test_item.markers.contains(&"slow".to_string()));
+        assert!(test_item.markers.contains(&"integration".to_string()));
+        assert!(test_item.markers.contains(&"smoke".to_string()));
+    }
+
+    #[test]
+    fn test_line_numbers_are_correct() {
+        let temp_dir = TempDir::new().unwrap();
+        let collector = FastCollector::new(temp_dir.path().to_str().unwrap().to_string());
+
+        let content = r#"
+# Line 1
+# Line 2
+def test_one():  # Line 3
+    pass
+
+# Line 6
+def test_two():  # Line 7
+    pass
+"#;
+        let test_file = create_test_file(&temp_dir, "test_lines.py", content);
+        let items = collector.parse_test_file(&test_file).unwrap();
+
+        let test_one = items.iter().find(|i| i.name == "test_one").unwrap();
+        let test_two = items.iter().find(|i| i.name == "test_two").unwrap();
+
+        // Line numbers start at 0 in the AST, but we report 1-indexed
+        assert!(test_one.line_number > 0);
+        assert!(test_two.line_number > test_one.line_number);
+    }
+}

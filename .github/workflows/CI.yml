@@ -160,7 +160,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.8', '3.9', '3.10', '3.11', '3.12']
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -185,6 +185,95 @@ jobs:
           pytest tests/ --collect-only
           pytest tests/ --no-fast-collect
           pytest tests/ -k "test_user"
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: pip install pytest pytest-cov
+      - name: Build and install package
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+      - name: Install built wheel
+        run: pip install dist/*.whl
+      - name: Run tests with coverage
+        run: pytest tests/ --cov=pytest_fastcollect --cov-report=xml --cov-report=term
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install security tools
+        run: |
+          pip install bandit[toml] safety pip-audit
+      - name: Run Bandit security scan
+        run: bandit -r pytest_fastcollect/ -c pyproject.toml -f json -o bandit-report.json
+        continue-on-error: true
+      - name: Display Bandit results
+        if: always()
+        run: bandit -r pytest_fastcollect/ -c pyproject.toml || true
+      - name: Run pip-audit for dependency vulnerabilities
+        run: pip-audit --desc --format json --output pip-audit-report.json || true
+        continue-on-error: true
+      - name: Display pip-audit results
+        if: always()
+        run: pip-audit --desc || true
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            pip-audit-report.json
+
+  rust-security:
+    name: Rust Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Run cargo audit
+        run: cargo audit --json > cargo-audit-report.json || true
+        continue-on-error: true
+      - name: Display cargo audit results
+        if: always()
+        run: cargo audit || true
+      - name: Upload Rust security report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: rust-security-report
+          path: cargo-audit-report.json
 
   release:
     name: Release

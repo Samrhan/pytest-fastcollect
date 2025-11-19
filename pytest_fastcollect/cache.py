@@ -3,8 +3,10 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from dataclasses import dataclass, asdict
+
+from .constants import CACHE_VERSION, MTIME_TOLERANCE_SECONDS
 
 
 @dataclass
@@ -29,8 +31,6 @@ class CacheStats:
 class CollectionCache:
     """Manages persistent cache of parsed test data with file modification times."""
 
-    CACHE_VERSION = "1.0"
-
     def __init__(self, cache_dir: Path):
         """
         Initialize cache manager.
@@ -44,7 +44,7 @@ class CollectionCache:
         self.stats = CacheStats()
         self._load_cache()
 
-    def _load_cache(self):
+    def _load_cache(self) -> None:
         """Load cache from disk if it exists."""
         if self.cache_file.exists():
             try:
@@ -52,7 +52,7 @@ class CollectionCache:
                     data = json.load(f)
 
                     # Check cache version
-                    if data.get('version') == self.CACHE_VERSION:
+                    if data.get('version') == CACHE_VERSION:
                         self.cache_data = data.get('entries', {})
                     else:
                         # Cache version mismatch, start fresh
@@ -61,12 +61,12 @@ class CollectionCache:
                 # Corrupted cache, start fresh
                 self.cache_data = {}
 
-    def save_cache(self):
+    def save_cache(self) -> None:
         """Save cache to disk."""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         cache_structure = {
-            'version': self.CACHE_VERSION,
+            'version': CACHE_VERSION,
             'entries': self.cache_data
         }
 
@@ -96,7 +96,7 @@ class CollectionCache:
         cached_mtime = cached_entry.get('mtime', 0)
 
         # Check if file has been modified
-        if abs(cached_mtime - current_mtime) < 0.01:  # Allow small floating point difference
+        if abs(cached_mtime - current_mtime) < MTIME_TOLERANCE_SECONDS:  # Allow small floating point difference
             self.stats.cache_hits += 1
             self.stats.files_from_cache += 1
             return cached_entry.get('items', [])
@@ -104,7 +104,7 @@ class CollectionCache:
             self.stats.cache_misses += 1
             return None
 
-    def update_cache(self, file_path: str, mtime: float, items: list):
+    def update_cache(self, file_path: str, mtime: float, items: List[Any]) -> None:
         """
         Update cache with newly parsed data.
 
@@ -119,7 +119,7 @@ class CollectionCache:
         }
         self.stats.files_parsed += 1
 
-    def merge_with_rust_data(self, rust_metadata: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, list], bool]:
+    def merge_with_rust_data(self, rust_metadata: Dict[str, Dict[str, Any]]) -> Tuple[Dict[str, List[Any]], bool]:
         """
         Merge Rust-collected metadata with cache.
 
@@ -160,7 +160,7 @@ class CollectionCache:
 
         return merged_data, cache_updated
 
-    def clear(self):
+    def clear(self) -> None:
         """Clear the entire cache."""
         self.cache_data = {}
         self.stats = CacheStats()
