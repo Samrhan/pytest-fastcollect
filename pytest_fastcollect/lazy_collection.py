@@ -96,6 +96,9 @@ class FastModule(Module):
         """
         items_data = self.rust_metadata.get('items', [])
 
+        # Debug: track what we're yielding
+        yielded_count = 0
+
         # Group items by type
         classes = {}
         functions = []
@@ -130,8 +133,11 @@ class FastModule(Module):
 
         # Generate function nodes
         for func_item in functions:
-            # Don't try to expand parametrized tests ourselves - let pytest handle it
-            # Just create the base node and pytest will expand it during setup
+            # Skip parametrized tests - let pytest's standard collection handle expansion
+            # Parametrized tests need special handling that pytest does automatically
+            if func_item.get('parametrize_count', 0) > 0:
+                continue
+
             yield FastFunction.from_parent(
                 self,
                 name=func_item['name'],
@@ -172,7 +178,10 @@ class FastClass(Class):
         Generate method nodes from Rust metadata WITHOUT importing.
         """
         for method_item in self.rust_methods:
-            # Don't try to expand parametrized tests - let pytest handle it
+            # Skip parametrized tests - let pytest's standard collection handle expansion
+            if method_item.get('parametrize_count', 0) > 0:
+                continue
+
             yield FastFunction.from_parent(
                 self,
                 name=method_item['name'],
@@ -204,14 +213,29 @@ class FastFunction(Function):
         """
         Lazy property that only accesses the function when needed.
         Triggers parent module/class import.
+
+        For class methods, we need to return a BOUND method (bound to an instance),
+        not an unbound method. Pytest's standard flow creates class instances automatically.
         """
         # Find parent (either Module or Class)
         parent = self.getparent(FastClass)
         if parent:
-            # Method in a class
+            # Method in a class - need to get bound method
+            # Let pytest's standard Class mechanism handle instance creation
+            # by calling super().obj which will:
+            # 1. Create an instance of the test class
+            # 2. Return the method bound to that instance
             class_obj = parent.obj
             if class_obj:
-                return getattr(class_obj, self.name, None)
+                # Create an instance of the test class
+                # This follows pytest's standard pattern
+                try:
+                    instance = class_obj()
+                    # Return the bound method
+                    return getattr(instance, self.name, None)
+                except Exception:
+                    # Fallback to pytest's standard handling
+                    return super().obj
         else:
             # Standalone function
             parent = self.getparent(FastModule)

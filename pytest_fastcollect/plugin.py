@@ -196,9 +196,44 @@ def pytest_configure(config: Config) -> None:
 
 
 def pytest_collection_modifyitems(session: Session, config: Config, items: List[Any]) -> None:
-    """Modify collected items - this is called AFTER collection."""
-    # This is called after collection, so it's too late to optimize
-    pass
+    """
+    Filter out duplicate test items created by both lazy and standard collection.
+
+    Since pytest_collect_file is additive, both our FastModule AND pytest's default
+    Module create test items. We keep FastFunction items (from lazy collection) and
+    remove duplicate standard Function items.
+    """
+    if not RUST_AVAILABLE or not FastFunction:
+        return
+
+    # Track which tests we've seen from FastFunction (lazy collection)
+    seen_lazy_tests = set()
+    filtered_items = []
+
+    # First pass: identify all FastFunction items
+    for item in items:
+        if isinstance(item, (FastFunction, FastClass)):
+            test_key = (str(item.path), item.name)
+            seen_lazy_tests.add(test_key)
+
+    # Second pass: keep FastFunction items and non-duplicate standard items
+    for item in items:
+        test_key = (str(item.path), item.name)
+
+        # Always keep lazy collection items (FastFunction, FastClass)
+        if isinstance(item, (FastFunction, FastClass)):
+            filtered_items.append(item)
+        # Keep standard items only if we don't have a lazy version
+        elif test_key not in seen_lazy_tests:
+            filtered_items.append(item)
+        # Skip duplicate standard items
+        else:
+            if config.option.verbose >= 2:
+                print(f"  FastCollect: Skipping duplicate standard item: {item.nodeid}",
+                      file=sys.stderr)
+
+    # Modify items in place
+    items[:] = filtered_items
 
 
 
@@ -398,26 +433,47 @@ def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int,
 
 def pytest_collect_file(file_path, parent):
     """
-    Hook for future lazy collection implementation.
+    Create FastModule instances for test files to enable lazy collection.
 
-    Currently disabled pending full pytest integration testing.
-    The file filtering via pytest_ignore_collect provides significant speedup already.
+    Returns FastModule for Python test files, which defers module imports
+    until test execution time. This bypasses pytest's import-heavy collection phase.
 
-    TODO: Implement full lazy collection with:
-    - Proper parametrize handling
-    - Class instance binding for methods
-    - Fixture resolution compatibility
+    Note: This hook is additive - pytest's default Python plugin will ALSO create
+    Module collectors. We filter out the duplicate standard Function items in
+    pytest_collection_modifyitems() to keep only our FastFunction items.
     """
-    # Lazy collection is complex and needs more work
-    # For now, we rely on file filtering + optional parallel import
+    global _collected_data
+
+    if not RUST_AVAILABLE or not FastModule:
+        return None
+
+    # Only handle Python test files
+    if file_path.suffix != ".py":
+        return None
+
+    # Check if this file was collected by Rust
+    abs_path = str(file_path.absolute())
+
+    if _collected_data and abs_path in _collected_data:
+        items = _collected_data[abs_path]
+
+        # Create metadata for FastModule
+        metadata = {'items': items}
+
+        # Return FastModule for lazy collection
+        return FastModule.from_parent(
+            parent,
+            path=file_path,
+            rust_metadata=metadata
+        )
+
     return None
 
 
 def pytest_ignore_collect(collection_path: Any, config: Config) -> Optional[bool]:
     """Called to determine whether to ignore a file/directory during collection.
 
-    This is now a FALLBACK for files that don't have Rust metadata.
-    The pytest_collect_file hook handles the fast path.
+    This hook filters out files that don't have tests according to Rust parser.
     """
     global _test_files_cache
 
@@ -429,7 +485,6 @@ def pytest_ignore_collect(collection_path: Any, config: Config) -> Optional[bool
         return None
 
     # If cache hasn't been initialized yet, don't filter
-    # (pytest_configure should have initialized it)
     if _test_files_cache is None:
         return None
 
