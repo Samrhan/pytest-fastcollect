@@ -1,0 +1,116 @@
+# Pre-commit hooks for pytest-fastcollect
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+# Update hooks: pre-commit autoupdate
+
+repos:
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^tests/
+      - id: end-of-file-fixer
+        exclude: ^tests/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+
+  # Python code formatting
+  - repo: https://github.com/psf/black
+    rev: 24.1.1
+    hooks:
+      - id: black
+        language_version: python3.11
+        args: ['--line-length=100']
+
+  # Import sorting
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ['--profile=black', '--line-length=100']
+
+  # Linting with ruff (replaces flake8, pylint, etc.)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.15
+    hooks:
+      - id: ruff
+        args: ['--fix', '--exit-non-zero-on-fix']
+
+  # Type checking with mypy
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [pytest>=7.0.0]
+        args: ['--config-file=pyproject.toml']
+        exclude: ^tests/
+
+  # Security checks with bandit
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.6
+    hooks:
+      - id: bandit
+        args: ['-c', 'pyproject.toml', '-r', 'pytest_fastcollect/']
+        additional_dependencies: ['bandit[toml]']
+        exclude: ^tests/
+
+  # Rust formatting
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --
+        language: system
+        types: [rust]
+        pass_filenames: true
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  # Python tests
+  - repo: local
+    hooks:
+      - id: pytest-check
+        name: pytest
+        entry: python -m pytest
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
+# Configuration
+default_language_version:
+  python: python3.11
+
+# Stages to run hooks
+default_stages: [commit]
+
+# File exclusions
+exclude: |
+  (?x)^(
+    \.git/|
+    \.venv/|
+    venv/|
+    \.tox/|
+    build/|
+    dist/|
+    target/|
+    \.eggs/|
+    .*\.egg-info/|
+    \.pytest_cache/|
+    __pycache__/|
+    Cargo\.lock
+  )

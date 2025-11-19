@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussions
+    url: https://github.com/Samrhan/pytest-fastcollect/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: 🔒 Security Vulnerability
+    url: https://github.com/Samrhan/pytest-fastcollect/security/advisories/new
+    about: Report security vulnerabilities privately (DO NOT create public issue)
+  - name: 📚 Documentation
+    url: https://github.com/Samrhan/pytest-fastcollect#readme
+    about: Read the documentation and guides
