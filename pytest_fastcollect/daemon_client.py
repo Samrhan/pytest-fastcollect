@@ -56,7 +56,7 @@ class DaemonClient:
         """Initialize daemon client.
 
         Args:
-            socket_path: Path to Unix domain socket
+            socket_path: Path to Unix domain socket (or base path for TCP mode)
             max_retries: Maximum number of retry attempts for failed requests
         """
         self.socket_path = socket_path
@@ -65,6 +65,19 @@ class DaemonClient:
         # Validate socket path
         if not isinstance(socket_path, str) or not socket_path:
             raise ValidationError("Invalid socket path")
+
+        # Detect socket type (TCP vs Unix)
+        self.use_tcp = not hasattr(socket, 'AF_UNIX')
+        self.tcp_port = None
+        if self.use_tcp:
+            # Try to read port from file
+            port_file = socket_path + ".port"
+            if os.path.exists(port_file):
+                try:
+                    with open(port_file, 'r') as f:
+                        self.tcp_port = int(f.read().strip())
+                except Exception as e:
+                    logger.warning(f"Failed to read port file: {e}")
 
     def is_daemon_running(self) -> bool:
         """Check if daemon is running and responsive.
@@ -219,14 +232,25 @@ class DaemonClient:
         Raises:
             Various socket exceptions that will be caught by send_request
         """
-        # Create socket
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
+        # Create socket (Unix or TCP depending on platform)
+        if self.use_tcp:
+            if self.tcp_port is None:
+                raise ConnectionError("TCP port not available. Is daemon running?")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            address = ('127.0.0.1', self.tcp_port)
+        else:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            address = self.socket_path
 
         try:
             # Connect to daemon
-            sock.connect(self.socket_path)
-            logger.debug(f"Connected to daemon at {self.socket_path}")
+            sock.connect(address)
+            if self.use_tcp:
+                logger.debug(f"Connected to daemon at 127.0.0.1:{self.tcp_port}")
+            else:
+                logger.debug(f"Connected to daemon at {self.socket_path}")
 
             # Send request
             request_data = json.dumps(request).encode('utf-8')
