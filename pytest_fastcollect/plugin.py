@@ -124,7 +124,6 @@ def pytest_configure(config: Config):
 
     # Initialize the collector and cache early
     fast_collector = FastCollector(root_path)
-    fast_collector = FastCollector(root_path)
     use_cache = getattr(config.option, 'fastcollect_cache', True)
 
     # Clear cache if requested
