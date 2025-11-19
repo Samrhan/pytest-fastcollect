@@ -43,7 +43,7 @@ pip install target/wheels/pytest_fastcollect-*.whl
 
 ### Requirements
 
-- Python 3.8+
+- Python 3.9+ (supports Python 3.9, 3.10, 3.11, 3.12, 3.13, 3.14)
 - Rust 1.70+
 - pytest 7.0+
 
@@ -157,6 +157,66 @@ python benchmark_parallel.py     # Test parallel import performance
 - `--daemon-health`: Check daemon health and diagnostics
 
 ## Architecture
+
+### System Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          pytest CLI                              │
+└──────────────────────┬──────────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   pytest-fastcollect Plugin                      │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  1. pytest_configure Hook (Early Initialization)           │ │
+│  │     - Create cache instance                                │ │
+│  │     - Start daemon (if --daemon-start)                     │ │
+│  │     - Check cache for existing data                        │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                       │                                          │
+│                       ▼                                          │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  2. Rust FastCollector (Parallel AST Parsing)             │ │
+│  │     - Walk directory tree (exclude .git, venv, etc.)       │ │
+│  │     - Parse Python AST with rustpython-parser              │ │
+│  │     - Extract tests, markers, mtimes (parallel via Rayon)  │ │
+│  │     - Return metadata to Python                            │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                       │                                          │
+│                       ▼                                          │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  3. Caching Layer (CollectionCache)                        │ │
+│  │     - Check file mtimes against cache                      │ │
+│  │     - Return cached data for unchanged files               │ │
+│  │     - Store new results in .pytest_cache/                  │ │
+│  │     - Track cache hits/misses for stats                    │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                       │                                          │
+│                       ▼                                          │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  4. Filter Logic (Optional: -k/-m filters)                 │ │
+│  │     - Apply keyword filters to test names                  │ │
+│  │     - Apply marker filters to test decorators              │ │
+│  │     - Select only files with matching tests                │ │
+│  │     - Skip importing non-matching files                    │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                       │                                          │
+│                       ▼                                          │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │  5. pytest_ignore_collect Hook (File Filtering)            │ │
+│  │     - Consulted for each file/directory pytest encounters  │ │
+│  │     - Return True to skip files not in collected data      │ │
+│  │     - Let pytest handle actual test collection             │ │
+│  └────────────────────────────────────────────────────────────┘ │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                            ▼
+                  ┌─────────────────────┐
+                  │  pytest Collection  │
+                  │  (Standard Process) │
+                  └─────────────────────┘
+```
 
 ### How It Works
 
