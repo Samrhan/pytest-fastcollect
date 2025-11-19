@@ -131,3 +131,35 @@ skips = ["B101", "B601"]  # Skip assert_used and paramiko_calls
 
 [tool.bandit.assert_used]
 skips = ["*_test.py", "test_*.py"]
+
+[tool.coverage.run]
+source = ["pytest_fastcollect"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+    "pytest_fastcollect/pytest_fastcollect.py",  # Rust extension, can't measure
+]
+branch = true
+parallel = true
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

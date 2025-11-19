@@ -1,5 +1,10 @@
 # pytest-fastcollect
 
+[![CI](https://github.com/Samrhan/pytest-fastcollect/actions/workflows/CI.yml/badge.svg)](https://github.com/Samrhan/pytest-fastcollect/actions/workflows/CI.yml)
+[![codecov](https://codecov.io/gh/Samrhan/pytest-fastcollect/branch/main/graph/badge.svg)](https://codecov.io/gh/Samrhan/pytest-fastcollect)
+[![PyPI version](https://badge.fury.io/py/pytest-fastcollect.svg)](https://badge.fury.io/py/pytest-fastcollect)
+[![Python versions](https://img.shields.io/pypi/pyversions/pytest-fastcollect.svg)](https://pypi.org/project/pytest-fastcollect/)
+
 A high-performance pytest plugin that uses Rust to accelerate test collection. This plugin leverages `rustpython-parser` to parse Python test files in parallel, with incremental caching to skip unchanged files.
 
 **Performance**: Up to **2.4x faster** collection on large projects (tested on Django's 1977 test files). Best for codebases with 200+ test files.

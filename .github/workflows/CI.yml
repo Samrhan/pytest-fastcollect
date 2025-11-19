@@ -186,6 +186,41 @@ jobs:
           pytest tests/ --no-fast-collect
           pytest tests/ -k "test_user"
 
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: pip install pytest pytest-cov
+      - name: Build and install package
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+      - name: Install built wheel
+        run: pip install dist/*.whl
+      - name: Run tests with coverage
+        run: pytest tests/ --cov=pytest_fastcollect --cov-report=xml --cov-report=term
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+
   release:
     name: Release
     runs-on: ubuntu-latest
