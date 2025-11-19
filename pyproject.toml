@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "pytest-fastcollect"
 version = "0.5.0"
 description = "A high-performance pytest plugin that replaces test collection with a Rust-based implementation"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "pytest>=7.0.0",
 ]
@@ -48,7 +48,7 @@ addopts = [
 
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+target-version = ['py39', 'py310', 'py311', 'py312']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -78,7 +78,7 @@ skip = [".venv", "venv", ".tox", "build", "dist", ".eggs", "target"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = [
@@ -104,7 +104,7 @@ ignore = [
 "tests/**/*.py" = ["ARG", "S101"]  # allow unused args and asserts in tests
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
