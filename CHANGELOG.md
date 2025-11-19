@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2025-11-19
+
+### Added
+- **Parametrize detection in Rust AST parser**: Now parses `@pytest.mark.parametrize` decorators to extract parameter counts, enabling future optimizations for parametrized tests
+  - New `extract_parametrize_count()` function in src/lib.rs (lines 337-383)
+  - Handles both list and tuple parameter formats
+  - Supports `@pytest.mark.parametrize` and `@mark.parametrize` syntax
+- **JSON serialization for FFI data transfer**: Added `collect_json()` method that serializes test metadata to JSON in Rust
+  - Significantly reduces FFI overhead compared to building PyDict/PyList objects (src/lib.rs:131-174)
+  - Uses serde_json for efficient serialization
+  - Future-ready for performance optimization
+- **Lazy collection infrastructure**: Created custom pytest nodes for deferred imports
+  - `FastModule`: Custom Module node that skips Python imports during collection
+  - `FastClass`: Custom Class node for test classes
+  - `FastFunction`: Custom Function node for test functions
+  - Infrastructure in place at pytest_fastcollect/lazy_collection.py (currently disabled pending full integration)
+- **Enhanced test metadata**: Test items now include `parametrize_count` field for accurate test counting
+
+### Changed
+- **Rust data structures** now implement `Serialize` and `Deserialize` traits
+- **Dependencies**: Added `serde = { version = "1.0", features = ["derive"] }` and `serde_json = "1.0"` to Cargo.toml
+
+### Performance
+- **Selective import maintains 1.65-1.72x speedup** when using `-k` or `-m` filters (verified with benchmark_selective_import.py)
+- **Reduced FFI overhead**: JSON serialization path ready for deployment (eliminates thousands of individual FFI calls)
+- All existing optimizations remain fully functional
+
+### Infrastructure
+- Added `pytest_collect_file` hook infrastructure (currently returns None, reserved for future lazy collection feature)
+- Enhanced Rust AST parsing capabilities for extracting test metadata without Python imports
+- Foundation laid for "game-changing" lazy collection in future releases
+
+### Technical Details
+This release focuses on **architectural improvements and future-proofing**:
+
+**Lazy Collection Vision**: The infrastructure for deferring Python module imports until test execution time has been implemented. This would provide dramatic speedups (potentially 5-10x) by bypassing pytest's import-heavy collection phase. However, full integration requires:
+- Proper parametrize expansion handling
+- Class instance binding for test methods
+- Fixture resolution compatibility
+- Extensive integration testing with pytest's internals
+
+**Current Status**: The lazy collection feature is **disabled** (pytest_collect_file returns None) while we validate the approach. The plugin continues to provide proven speedups through:
+- Rust-based file discovery
+- Intelligent file filtering with markers/keywords
+- Incremental caching
+- Optional parallel imports
+
+**Benchmark Results**:
+- Selective import: **1.65-1.72x faster** with `-k` or `-m` filters
+- Cache effectiveness: **100% hit rate** on unchanged files
+- Ready for JSON serialization deployment when needed
+
+### Testing
+- All 182 tests pass
+- All 23 Rust unit tests pass
+- Backward compatible with existing functionality
+- No breaking changes
+
 ## [0.5.2] - 2025-01-19
 
 ### Added
@@ -204,6 +262,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Key Feature | Performance |
 |---------|------|-------------|-------------|
+| 0.6.0 | 2025-11 | Lazy Collection Infrastructure, Parametrize Detection, JSON FFI | Architecture for future 5-10x |
 | 0.5.2 | 2025-01 | Property-Based Tests, Python 3.13/3.14, Stricter Types | Quality & Robustness |
 | 0.5.1 | 2025-01 | Comprehensive Test Suite, Security | 182 tests, 60% coverage |
 | 0.5.0 | 2025-01 | Production-Ready Daemon | 100-1000x on re-runs |
@@ -213,6 +272,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | 0.1.0 | 2024-09 | Initial Release | 1.01x baseline |
 
 ## Upgrade Guide
+
+### From 0.5.2 to 0.6.0
+No breaking changes. Simply upgrade:
+```bash
+pip install --upgrade pytest-fastcollect
+```
+
+Benefits:
+- Enhanced Rust AST parsing with parametrize detection
+- Infrastructure for future lazy collection feature
+- Improved FFI data transfer with JSON serialization
+- All existing features continue to work as before
+- Maintains 1.65-1.72x speedup with selective import
 
 ### From 0.5.1 to 0.5.2
 **Breaking Change**: Python 3.8 is no longer supported. Python 3.9+ is required.

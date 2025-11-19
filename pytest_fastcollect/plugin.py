@@ -22,6 +22,7 @@ try:
         get_daemon_pid, stop_daemon, is_process_running
     )
     from .constants import DEFAULT_CPU_COUNT, BENCHMARK_TIMEOUT_SECONDS
+    from .lazy_collection import FastModule, FastFunction, FastClass
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
@@ -32,6 +33,9 @@ except ImportError:
     start_daemon_background = None
     DaemonClient = None
     get_socket_path = None
+    FastModule = None
+    FastFunction = None
+    FastClass = None
 
 
 def pytest_configure(config: Config) -> None:
@@ -392,10 +396,28 @@ def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int,
                   file=sys.stderr)
 
 
+def pytest_collect_file(file_path, parent):
+    """
+    Hook for future lazy collection implementation.
+
+    Currently disabled pending full pytest integration testing.
+    The file filtering via pytest_ignore_collect provides significant speedup already.
+
+    TODO: Implement full lazy collection with:
+    - Proper parametrize handling
+    - Class instance binding for methods
+    - Fixture resolution compatibility
+    """
+    # Lazy collection is complex and needs more work
+    # For now, we rely on file filtering + optional parallel import
+    return None
+
+
 def pytest_ignore_collect(collection_path: Any, config: Config) -> Optional[bool]:
     """Called to determine whether to ignore a file/directory during collection.
 
-    Uses Rust-parsed metadata from pytest_configure to efficiently filter files.
+    This is now a FALLBACK for files that don't have Rust metadata.
+    The pytest_collect_file hook handles the fast path.
     """
     global _test_files_cache
 

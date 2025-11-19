@@ -2,13 +2,14 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 use rustpython_parser::{ast, Parse};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestItem {
     file_path: String,
     name: String,
@@ -16,16 +17,18 @@ struct TestItem {
     item_type: TestItemType,
     class_name: Option<String>,
     markers: Vec<String>,
+    /// Parametrize info: list of parameter sets (for generating correct number of test nodes)
+    parametrize_count: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum TestItemType {
     Function,
     Class,
     Method,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileMetadata {
     path: String,
     mtime: f64,
@@ -126,6 +129,51 @@ impl FastCollector {
         let path = PathBuf::from(file_path);
         let items = self.parse_test_file(&path).unwrap_or_default();
         self.items_to_python(py, &items)
+    }
+
+    /// Collect all test files and return metadata as JSON string
+    /// This is MUCH faster than building PyDict/PyList objects across FFI boundary
+    fn collect_json(&self) -> PyResult<String> {
+        let test_files = self.find_test_files();
+
+        // Use rayon for parallel processing
+        let file_metadata: Vec<FileMetadata> = test_files
+            .par_iter()
+            .filter_map(|file_path| {
+                // Get file modification time
+                let mtime = match fs::metadata(file_path) {
+                    Ok(metadata) => {
+                        match metadata.modified() {
+                            Ok(time) => {
+                                match time.duration_since(SystemTime::UNIX_EPOCH) {
+                                    Ok(duration) => duration.as_secs_f64(),
+                                    Err(_) => 0.0,
+                                }
+                            }
+                            Err(_) => 0.0,
+                        }
+                    }
+                    Err(_) => 0.0,
+                };
+
+                // Parse test items
+                let test_items = self.parse_test_file(file_path).unwrap_or_default();
+
+                if test_items.is_empty() {
+                    return None;
+                }
+
+                Some(FileMetadata {
+                    path: file_path.to_string_lossy().to_string(),
+                    mtime,
+                    test_items,
+                })
+            })
+            .collect();
+
+        // Serialize to JSON in one go - much faster than thousands of FFI calls!
+        serde_json::to_string(&file_metadata)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("JSON serialization failed: {}", e)))
     }
 }
 
@@ -256,6 +304,7 @@ impl FastCollector {
                 let name = func.name.as_str();
                 if self.is_test_function(name) {
                     let markers = self.extract_markers(&func.decorator_list);
+                    let parametrize_count = self.extract_parametrize_count(&func.decorator_list);
                     items.push(TestItem {
                         file_path: file_path.to_string(),
                         name: name.to_string(),
@@ -267,6 +316,7 @@ impl FastCollector {
                         },
                         class_name: class_context.map(|s| s.to_string()),
                         markers,
+                        parametrize_count,
                     });
                 }
             }
@@ -282,6 +332,7 @@ impl FastCollector {
                         item_type: TestItemType::Class,
                         class_name: None,
                         markers,
+                        parametrize_count: None,
                     });
 
                     // Extract methods from the class
@@ -334,6 +385,54 @@ impl FastCollector {
         markers
     }
 
+    /// Extract parametrize count from decorator list
+    /// Parses @pytest.mark.parametrize("arg", [val1, val2, ...]) to count parameter sets
+    /// This allows us to generate the correct number of test nodes WITHOUT importing Python code!
+    fn extract_parametrize_count(&self, decorators: &[ast::Expr]) -> Option<usize> {
+        for decorator in decorators {
+            // Look for @pytest.mark.parametrize(...) or @mark.parametrize(...)
+            if let ast::Expr::Call(call) = decorator {
+                if let ast::Expr::Attribute(attr) = call.func.as_ref() {
+                    let is_parametrize = attr.attr.as_str() == "parametrize";
+
+                    if !is_parametrize {
+                        continue;
+                    }
+
+                    // Check if it's pytest.mark.parametrize or mark.parametrize
+                    let is_pytest_mark = if let ast::Expr::Attribute(parent_attr) = attr.value.as_ref() {
+                        if let ast::Expr::Name(name) = parent_attr.value.as_ref() {
+                            name.id.as_str() == "pytest" && parent_attr.attr.as_str() == "mark"
+                        } else {
+                            false
+                        }
+                    } else if let ast::Expr::Name(name) = attr.value.as_ref() {
+                        name.id.as_str() == "mark"
+                    } else {
+                        false
+                    };
+
+                    if !is_pytest_mark {
+                        continue;
+                    }
+
+                    // Try to extract the parameter count from the second argument
+                    // @pytest.mark.parametrize("arg", [val1, val2, val3]) -> count = 3
+                    // @pytest.mark.parametrize("arg1,arg2", [(v1,v2), (v3,v4)]) -> count = 2
+                    if call.args.len() >= 2 {
+                        if let ast::Expr::List(list_expr) = &call.args[1] {
+                            return Some(list_expr.elts.len());
+                        } else if let ast::Expr::Tuple(tuple_expr) = &call.args[1] {
+                            return Some(tuple_expr.elts.len());
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Check if a function name indicates a test function
     fn is_test_function(&self, name: &str) -> bool {
         name.starts_with("test_") || name.starts_with("test")
@@ -377,6 +476,11 @@ impl FastCollector {
                 }
                 item_dict.set_item("markers", markers_list)?;
 
+                // Add parametrize count
+                if let Some(count) = item.parametrize_count {
+                    item_dict.set_item("parametrize_count", count)?;
+                }
+
                 items_list.append(item_dict)?;
             }
 
@@ -412,6 +516,11 @@ impl FastCollector {
                     markers_list.append(marker)?;
                 }
                 item_dict.set_item("markers", markers_list)?;
+
+                // Add parametrize count
+                if let Some(count) = item.parametrize_count {
+                    item_dict.set_item("parametrize_count", count)?;
+                }
 
                 items_list.append(item_dict)?;
             }
