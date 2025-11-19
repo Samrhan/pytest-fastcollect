@@ -3,7 +3,7 @@ use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 use rustpython_parser::{ast, Parse};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -33,6 +33,144 @@ struct FileMetadata {
     path: String,
     mtime: f64,
     test_items: Vec<TestItem>,
+}
+
+/// Test filter for keyword and marker expressions
+#[derive(Debug, Clone)]
+struct TestFilter {
+    keyword_expr: Option<String>,
+    marker_expr: Option<String>,
+}
+
+impl TestFilter {
+    fn new(keyword_expr: Option<String>, marker_expr: Option<String>) -> Self {
+        TestFilter {
+            keyword_expr,
+            marker_expr,
+        }
+    }
+
+    /// Check if a test item matches the filter criteria
+    fn matches(&self, item: &TestItem) -> bool {
+        // If no filters, everything matches
+        if self.keyword_expr.is_none() && self.marker_expr.is_none() {
+            return true;
+        }
+
+        // Check keyword filter
+        if let Some(ref expr) = self.keyword_expr {
+            if !self.matches_keyword(item, expr) {
+                return false;
+            }
+        }
+
+        // Check marker filter
+        if let Some(ref expr) = self.marker_expr {
+            if !self.matches_marker(item, expr) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Check if test matches keyword expression (-k)
+    fn matches_keyword(&self, item: &TestItem, expr: &str) -> bool {
+        // Build searchable text from test item
+        let mut parts = vec![item.name.to_lowercase()];
+
+        if let Some(ref class_name) = item.class_name {
+            parts.push(class_name.to_lowercase());
+        }
+
+        // Add filename without extension
+        if let Some(filename) = Path::new(&item.file_path).file_stem() {
+            parts.push(filename.to_string_lossy().to_lowercase());
+        }
+
+        let search_text = parts.join(" ");
+
+        self.evaluate_expression(expr, &search_text)
+    }
+
+    /// Check if test matches marker expression (-m)
+    fn matches_marker(&self, item: &TestItem, expr: &str) -> bool {
+        let marker_set: HashSet<String> = item
+            .markers
+            .iter()
+            .map(|m| m.to_lowercase())
+            .collect();
+
+        self.evaluate_marker_expression(expr, &marker_set)
+    }
+
+    /// Evaluate keyword expression against search text
+    fn evaluate_expression(&self, expr: &str, search_text: &str) -> bool {
+        let expr = expr.to_lowercase().trim().to_string();
+
+        // Handle simple case: single keyword
+        if !expr.contains(" and ") && !expr.contains(" or ") && !expr.starts_with("not ") {
+            return search_text.contains(&expr);
+        }
+
+        // Handle NOT
+        if expr.starts_with("not ") {
+            let keyword = expr[4..].trim();
+            return !search_text.contains(keyword);
+        }
+
+        // Handle AND (has higher precedence than OR in pytest)
+        if expr.contains(" and ") {
+            let parts: Vec<&str> = expr.split(" and ").collect();
+            return parts
+                .iter()
+                .all(|p| self.evaluate_expression(p.trim(), search_text));
+        }
+
+        // Handle OR
+        if expr.contains(" or ") {
+            let parts: Vec<&str> = expr.split(" or ").collect();
+            return parts
+                .iter()
+                .any(|p| self.evaluate_expression(p.trim(), search_text));
+        }
+
+        search_text.contains(&expr)
+    }
+
+    /// Evaluate marker expression against marker set
+    fn evaluate_marker_expression(&self, expr: &str, markers: &HashSet<String>) -> bool {
+        let expr = expr.to_lowercase().trim().to_string();
+
+        // Handle simple case: single marker
+        if !expr.contains(" and ") && !expr.contains(" or ") && !expr.starts_with("not ") {
+            return markers.contains(&expr);
+        }
+
+        // Handle NOT
+        if expr.starts_with("not ") {
+            let marker = expr[4..].trim();
+            return !markers.contains(marker);
+        }
+
+        // Handle AND
+        if expr.contains(" and ") {
+            let parts: Vec<&str> = expr.split(" and ").collect();
+            return parts
+                .iter()
+                .all(|p| self.evaluate_marker_expression(p.trim(), markers));
+        }
+
+        // Handle OR
+        if expr.contains(" or ") {
+            let parts: Vec<&str> = expr.split(" or ").collect();
+            return parts
+                .iter()
+                .any(|p| self.evaluate_marker_expression(p.trim(), markers));
+        }
+
+        markers.contains(&expr)
+    }
 }
 
 /// Fast test collector using Rust
@@ -172,6 +310,65 @@ impl FastCollector {
             .collect();
 
         // Serialize to JSON in one go - much faster than thousands of FFI calls!
+        serde_json::to_string(&file_metadata)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("JSON serialization failed: {}", e)))
+    }
+
+    /// Collect with filtering applied in Rust (MUCH faster than Python filtering)
+    /// This is the "quick win" optimization - filters tests during Rayon parallel iteration
+    #[pyo3(signature = (keyword_expr=None, marker_expr=None))]
+    fn collect_json_filtered(
+        &self,
+        keyword_expr: Option<String>,
+        marker_expr: Option<String>,
+    ) -> PyResult<String> {
+        let test_files = self.find_test_files();
+        let filter = TestFilter::new(keyword_expr, marker_expr);
+
+        // Use rayon for parallel processing WITH filtering
+        let file_metadata: Vec<FileMetadata> = test_files
+            .par_iter()
+            .filter_map(|file_path| {
+                // Get file modification time
+                let mtime = match fs::metadata(file_path) {
+                    Ok(metadata) => {
+                        match metadata.modified() {
+                            Ok(time) => {
+                                match time.duration_since(SystemTime::UNIX_EPOCH) {
+                                    Ok(duration) => duration.as_secs_f64(),
+                                    Err(_) => 0.0,
+                                }
+                            }
+                            Err(_) => 0.0,
+                        }
+                    }
+                    Err(_) => 0.0,
+                };
+
+                // Parse test items
+                let all_items = self.parse_test_file(file_path).unwrap_or_default();
+
+                // CRITICAL: Apply filter HERE in Rust, not in Python!
+                // This avoids creating Python objects for filtered-out tests
+                let test_items: Vec<TestItem> = all_items
+                    .into_iter()
+                    .filter(|item| filter.matches(item))
+                    .collect();
+
+                // Skip file if no matching tests
+                if test_items.is_empty() {
+                    return None;
+                }
+
+                Some(FileMetadata {
+                    path: file_path.to_string_lossy().to_string(),
+                    mtime,
+                    test_items,
+                })
+            })
+            .collect();
+
+        // Serialize to JSON
         serde_json::to_string(&file_metadata)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("JSON serialization failed: {}", e)))
     }

@@ -140,11 +140,36 @@ def pytest_configure(config: Config) -> None:
             if config.option.verbose >= 0:
                 print("FastCollect: Cache cleared", file=sys.stderr)
 
-    # Pre-collect test files and cache them
+    # Get filter options BEFORE collection (Rust-side filtering optimization)
+    keyword_expr = config.getoption("-k", default=None)
+    marker_expr = config.getoption("-m", default=None)
+
+    # Pre-collect test files with Rust-side filtering (MAJOR OPTIMIZATION)
+    # This filters during parallel collection, avoiding Python object creation for filtered tests
     if use_cache:
         cache_dir = _get_cache_dir(config)
         _collection_cache = CollectionCache(cache_dir)
-        rust_metadata = fast_collector.collect_with_metadata()
+
+        # Use JSON-based collection with filtering for maximum performance
+        try:
+            import json
+            json_data = fast_collector.collect_json_filtered(
+                keyword_expr=keyword_expr,
+                marker_expr=marker_expr
+            )
+            file_metadata_list = json.loads(json_data)
+
+            # Convert to expected format: {file_path: [test_items]}
+            rust_metadata = {
+                fm['path']: fm['test_items']
+                for fm in file_metadata_list
+            }
+
+        except Exception as e:
+            # Fallback to old method if JSON fails
+            print(f"Warning: JSON filtering failed ({e}), using legacy method", file=sys.stderr)
+            rust_metadata = fast_collector.collect_with_metadata()
+
         collected_data, cache_updated = _collection_cache.merge_with_rust_data(rust_metadata)
 
         if cache_updated:
@@ -152,22 +177,33 @@ def pytest_configure(config: Config) -> None:
 
         _cache_stats = _collection_cache.stats
     else:
-        collected_data = fast_collector.collect()
+        # No cache: use JSON filtering for maximum speed
+        try:
+            import json
+            json_data = fast_collector.collect_json_filtered(
+                keyword_expr=keyword_expr,
+                marker_expr=marker_expr
+            )
+            file_metadata_list = json.loads(json_data)
+
+            # Convert to expected format
+            collected_data = {
+                fm['path']: fm['test_items']
+                for fm in file_metadata_list
+            }
+        except Exception as e:
+            # Fallback to old method
+            print(f"Warning: JSON filtering failed ({e}), using legacy method", file=sys.stderr)
+            collected_data = fast_collector.collect()
+
         _cache_stats = None
 
     _collected_data = collected_data
 
-    # Apply selective import filtering based on -k and -m options
-    keyword_expr = config.getoption("-k", default=None)
-    marker_expr = config.getoption("-m", default=None)
-
+    # Rust-side filtering already applied, so only compute file cache
     if keyword_expr or marker_expr:
-        # Only include files with tests matching the filter
-        _test_files_cache = get_files_with_matching_tests(
-            collected_data,
-            keyword_expr=keyword_expr,
-            marker_expr=marker_expr
-        )
+        # Rust already filtered tests, just need file paths
+        _test_files_cache = set(collected_data.keys())
         if config.option.verbose >= 1:
             total_files = len(collected_data)
             filtered_files = len(_test_files_cache)
