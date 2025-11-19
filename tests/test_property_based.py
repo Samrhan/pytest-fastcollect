@@ -4,13 +4,32 @@ These tests generate random inputs to test edge cases and invariants.
 """
 
 import pytest
-from hypothesis import given, strategies as st, assume
+
+# Try to import hypothesis, skip all tests if not available
+try:
+    from hypothesis import given, strategies as st, assume
+    HYPOTHESIS_AVAILABLE = True
+except ImportError:
+    HYPOTHESIS_AVAILABLE = False
+    # Create dummy decorators for when hypothesis is not available
+    def given(*args, **kwargs):
+        return pytest.mark.skip(reason="hypothesis not installed")
+    st = None
+    assume = None
+
 from pathlib import Path
 import tempfile
 import json
 
 from pytest_fastcollect.filter import TestFilter, filter_collected_data
 from pytest_fastcollect.cache import CollectionCache, CacheStats
+
+
+# Skip all tests in this module if hypothesis is not available
+pytestmark = pytest.mark.skipif(
+    not HYPOTHESIS_AVAILABLE,
+    reason="hypothesis not installed (install with: pip install hypothesis)"
+)
 
 
 # ============================================================================
