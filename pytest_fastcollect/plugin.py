@@ -233,43 +233,29 @@ def pytest_configure(config: Config) -> None:
 
 def pytest_collection_modifyitems(session: Session, config: Config, items: List[Any]) -> None:
     """
-    Filter out duplicate test items created by both lazy and standard collection.
+    PHASE 3 FIX: Removed duplicate filtering.
 
-    Since pytest_collect_file is additive, both our FastModule AND pytest's default
-    Module create test items. We keep FastFunction items (from lazy collection) and
-    remove duplicate standard Function items.
+    Previously, this hook filtered out duplicates created by both FastModule (lazy
+    collection) and pytest's standard Module. This was O(n) overhead.
+
+    Now that lazy collection is disabled (pytest_collect_file returns None), we only
+    have standard pytest collection, so no duplicates exist. This hook is now a no-op.
+
+    Benchmarks showed lazy collection was 0.95x slower due to:
+    - Double collection overhead
+    - Custom node creation overhead
+    - This O(n) duplicate filtering overhead
+
+    With lazy collection disabled, we get:
+    - Single collection path (standard pytest only)
+    - No custom node overhead
+    - No duplicate filtering needed
+    - Rust-side filtering still active (tests filtered during parallel collection)
+
+    Expected speedup: 1.5-2.0x by eliminating double collection.
     """
-    if not RUST_AVAILABLE or not FastFunction:
-        return
-
-    # Track which tests we've seen from FastFunction (lazy collection)
-    seen_lazy_tests = set()
-    filtered_items = []
-
-    # First pass: identify all FastFunction items
-    for item in items:
-        if isinstance(item, (FastFunction, FastClass)):
-            test_key = (str(item.path), item.name)
-            seen_lazy_tests.add(test_key)
-
-    # Second pass: keep FastFunction items and non-duplicate standard items
-    for item in items:
-        test_key = (str(item.path), item.name)
-
-        # Always keep lazy collection items (FastFunction, FastClass)
-        if isinstance(item, (FastFunction, FastClass)):
-            filtered_items.append(item)
-        # Keep standard items only if we don't have a lazy version
-        elif test_key not in seen_lazy_tests:
-            filtered_items.append(item)
-        # Skip duplicate standard items
-        else:
-            if config.option.verbose >= 2:
-                print(f"  FastCollect: Skipping duplicate standard item: {item.nodeid}",
-                      file=sys.stderr)
-
-    # Modify items in place
-    items[:] = filtered_items
+    # No-op: Duplicate filtering no longer needed
+    pass
 
 
 
@@ -469,47 +455,22 @@ def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int,
 
 def pytest_collect_file(file_path, parent):
     """
-    Create FastModule instances for test files to enable lazy collection.
+    DISABLED: Lazy collection via FastModule.
 
-    Returns FastModule for Python test files, which defers module imports
-    until test execution time. This bypasses pytest's import-heavy collection phase.
+    Lazy collection was found to add overhead (0.95x slower in benchmarks) due to:
+    1. Double collection: Both FastModule and pytest's standard Module collect
+    2. Custom node overhead: Creating FastModule/FastClass/FastFunction objects
+    3. O(n) duplicate filtering required in pytest_collection_modifyitems
 
-    Note: This hook is additive - pytest's default Python plugin will ALSO create
-    Module collectors. We filter out the duplicate standard Function items in
-    pytest_collection_modifyitems() to keep only our FastFunction items.
+    Instead, we rely on:
+    1. Rust-side filtering during collection (filters tests before Python sees them)
+    2. pytest_ignore_collect to skip files without matching tests
+    3. Standard pytest collection (single, optimized path)
+
+    See REAL_WORLD_BENCHMARK_RESULTS.md for detailed analysis.
     """
-    global _collected_data
-
-    if not RUST_AVAILABLE or not FastModule:
-        return None
-
-    # Only handle Python test files
-    if file_path.suffix != ".py":
-        return None
-
-    # Skip daemon-related test files to avoid hang issues
-    # These files import daemon modules which may have circular dependencies
-    # TODO: Investigate root cause - works in isolation but hangs when running full suite
-    skip_patterns = ['test_daemon.py', 'test_daemon_client.py', 'test_property_based.py']
-    if any(pattern in str(file_path) for pattern in skip_patterns):
-        return None
-
-    # Check if this file was collected by Rust
-    abs_path = str(file_path.absolute())
-
-    if _collected_data and abs_path in _collected_data:
-        items = _collected_data[abs_path]
-
-        # Create metadata for FastModule
-        metadata = {'items': items}
-
-        # Return FastModule for lazy collection
-        return FastModule.from_parent(
-            parent,
-            path=file_path,
-            rust_metadata=metadata
-        )
-
+    # PHASE 3 FIX: Disable lazy collection to eliminate double collection overhead
+    # This is the critical fix to achieve 1.5-2.0x speedup
     return None
 
 
