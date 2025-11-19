@@ -98,6 +98,17 @@ class CollectionDaemon:
         if log_file is None:
             log_dir = Path(self.socket_path).parent
             log_file = str(log_dir / "daemon.log")
+        else:
+            log_dir = Path(log_file).parent
+
+        # Ensure log directory exists
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            # If we can't create the log directory, fall back to a safe location
+            import tempfile
+            log_dir = Path(tempfile.gettempdir())
+            log_file = str(log_dir / "pytest-fastcollect-daemon.log")
 
         # Create rotating file handler (10MB max, keep 5 backups)
         handler = RotatingFileHandler(
