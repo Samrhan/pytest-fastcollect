@@ -104,8 +104,9 @@ class CollectionDaemon:
         if log_file is None:
             log_dir = Path(self.socket_path).parent
             log_file = str(log_dir / "daemon.log")
-        else:
-            log_dir = Path(log_file).parent
+
+        # Get log directory (works whether log_file was provided or generated)
+        log_dir = Path(log_file).parent
 
         # Ensure log directory exists
         try:
