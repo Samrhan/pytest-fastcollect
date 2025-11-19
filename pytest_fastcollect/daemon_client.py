@@ -456,16 +456,34 @@ def is_process_running(pid: int) -> bool:
         True if process is running, False otherwise
 
     Note:
-        Uses os.kill with signal 0 (doesn't actually send a signal)
+        Uses platform-specific methods to check process existence
     """
     if pid <= 0:
         return False
 
-    try:
-        os.kill(pid, 0)  # Send signal 0 (doesn't kill, just checks)
-        return True
-    except OSError:
-        return False
+    import sys
+
+    if sys.platform == 'win32':
+        # On Windows, use tasklist command
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['tasklist', '/FI', f'PID eq {pid}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return str(pid) in result.stdout
+        except Exception:
+            # If tasklist fails, assume process doesn't exist
+            return False
+    else:
+        # On Unix, use os.kill with signal 0
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
 
 def stop_daemon(socket_path: str) -> bool:
