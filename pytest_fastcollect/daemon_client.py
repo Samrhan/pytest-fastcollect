@@ -174,6 +174,14 @@ class DaemonClient:
                     f"Connection failed (attempt {attempt + 1}/{retries + 1}): {e}"
                 )
 
+            except ClientError as e:
+                # Already a client error (ConnectionError, TimeoutError, ValidationError, etc.)
+                # Preserve it and continue retrying
+                last_exception = e
+                logger.warning(
+                    f"Client error (attempt {attempt + 1}/{retries + 1}): {e}"
+                )
+
             except Exception as e:
                 last_exception = ClientError(f"Unexpected error: {e}")
                 logger.error(
