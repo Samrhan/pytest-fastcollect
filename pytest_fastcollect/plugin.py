@@ -453,6 +453,7 @@ def pytest_collect_file(file_path, parent):
 
     # Skip daemon-related test files to avoid hang issues
     # These files import daemon modules which may have circular dependencies
+    # TODO: Investigate root cause - works in isolation but hangs when running full suite
     skip_patterns = ['test_daemon.py', 'test_daemon_client.py', 'test_property_based.py']
     if any(pattern in str(file_path) for pattern in skip_patterns):
         return None
