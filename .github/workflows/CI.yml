@@ -178,6 +178,8 @@ jobs:
       - name: Install built wheel
         shell: bash
         run: pip install dist/*.whl
+      - name: Install dev dependencies for testing
+        run: pip install hypothesis
       - name: Run tests
         run: pytest tests/ -v
       - name: Test CLI options

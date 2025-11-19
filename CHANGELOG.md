@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2025-01-19
+
+### Added
+- 🧪 **Property-Based Testing**: Added comprehensive property-based tests using Hypothesis
+  - 11 new property-based tests for filter logic and cache behavior
+  - Tests filter commutivity, double negation, cache persistence, and more
+  - Automatically generates hundreds of test cases to find edge cases
+  - Total test count: 182 → 193 tests
+- 📚 **Documentation Overhaul**: Improved architecture documentation
+  - Added ASCII art system architecture diagram
+  - Better visual representation of data flow
+  - Updated Python version requirements (3.9-3.14)
+  - Clearer component interaction documentation
+- 🔍 **Stricter Type Checking**: Enhanced mypy configuration for better type safety
+  - Enabled `disallow_untyped_defs` for all production code
+  - Enabled `disallow_incomplete_defs` for complete type coverage
+  - Added `strict_optional` for better None handling
+  - Type annotations now enforced for all new code
+- 📦 **Python 3.13 & 3.14 Support**: Added support for latest Python versions
+  - CI now tests on Python 3.9, 3.10, 3.11, 3.12, 3.13, and 3.14
+  - Updated black and tool configurations for new Python versions
+  - Added PyPI classifiers for Python 3.13 and 3.14
+- 📋 **Constants Module**: Extracted magic numbers to centralized constants
+  - Created `pytest_fastcollect/constants.py` for all configuration values
+  - Daemon, client, cache, and performance constants now centralized
+  - Easier tuning and better maintainability
+- 🔧 **Hypothesis Dev Dependency**: Added hypothesis>=6.0.0 to dev dependencies
+
+### Fixed
+- 🐛 **Filter Bug**: Fixed crash when test class is None in filter logic
+  - `filter.py:59` now checks `class is not None` before adding to search text
+  - Prevents `TypeError: expected str instance, NoneType found`
+  - Discovered by property-based tests!
+- 🪟 **Windows Daemon Support**: Fixed daemon failing on Windows with `AttributeError: module 'os' has no attribute 'fork'`
+  - Added cross-platform daemon launching
+  - Unix/Linux/macOS: Uses double-fork technique (existing behavior)
+  - Windows: Uses subprocess with CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS flags
+  - Daemon now works on all platforms
+
+### Changed
+- ⬆️ **Python 3.9+ Required**: Dropped Python 3.8 support, now requires Python 3.9+
+  - Python 3.8 reached end-of-life
+  - Allows use of `hashlib.md5(usedforsecurity=False)` without version checks
+  - Simplified codebase by removing compatibility workarounds
+- 📊 **Test Suite**: Expanded from 182 to 193 tests (6% increase)
+  - Added 11 property-based tests
+  - Improved edge case coverage
+  - Better confidence in filter and cache correctness
+
+### Technical Details
+- Property-based tests generate random inputs to validate:
+  - Filter keyword matching and substring behavior
+  - Marker AND/OR/NOT expression logic
+  - Cache hit/miss behavior with various mtimes
+  - Cache persistence across instances
+  - Expression commutativity and double negation properties
+- Mypy configuration improvements:
+  - `disallow_untyped_defs = true`
+  - `disallow_incomplete_defs = true`
+  - `strict_optional = true`
+  - Special overrides for test files and complex modules
+- Constants extracted from 5 modules:
+  - 18 daemon configuration constants
+  - 12 client configuration constants
+  - 6 performance tuning constants
+  - 4 cache configuration constants
+
+## [0.5.1] - 2025-01-18
+
 ### Added
 - Comprehensive test suite for cache.py (31 tests, 100% coverage)
 - Comprehensive test suite for filter.py (34 tests, 100% coverage)
@@ -22,7 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Test coverage increased from ~35% to ~60%
-- Total test count: 61 → 126 tests
+- Total test count: 61 → 182 tests
 
 ## [0.5.0] - 2025-01-15
 
@@ -135,6 +204,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Key Feature | Performance |
 |---------|------|-------------|-------------|
+| 0.5.2 | 2025-01 | Property-Based Tests, Python 3.13/3.14, Stricter Types | Quality & Robustness |
+| 0.5.1 | 2025-01 | Comprehensive Test Suite, Security | 182 tests, 60% coverage |
 | 0.5.0 | 2025-01 | Production-Ready Daemon | 100-1000x on re-runs |
 | 0.4.0 | 2024-12 | Selective Import | 1.55-2.75x with filters |
 | 0.3.0 | 2024-11 | Better Integration | ~5% improvement |
@@ -142,6 +213,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | 0.1.0 | 2024-09 | Initial Release | 1.01x baseline |
 
 ## Upgrade Guide
+
+### From 0.5.1 to 0.5.2
+**Breaking Change**: Python 3.8 is no longer supported. Python 3.9+ is required.
+
+```bash
+pip install --upgrade pytest-fastcollect
+```
+
+Benefits:
+- Property-based tests ensure better correctness
+- Support for Python 3.13 and 3.14
+- Fixed filter bug discovered by property-based testing
+- Better type safety with stricter mypy checks
+
+### From 0.5.0 to 0.5.1
+No breaking changes. Simply upgrade:
+```bash
+pip install --upgrade pytest-fastcollect
+```
 
 ### From 0.4.x to 0.5.0
 No breaking changes. Simply upgrade:

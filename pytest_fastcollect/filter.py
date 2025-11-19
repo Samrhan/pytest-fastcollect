@@ -55,7 +55,7 @@ class TestFilter:
         # Build a searchable string from the test item
         parts = [test_item['name']]
 
-        if 'class' in test_item:
+        if 'class' in test_item and test_item['class'] is not None:
             parts.append(test_item['class'])
 
         # Add file path components
