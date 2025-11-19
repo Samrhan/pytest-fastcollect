@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Technical Details
 This release focuses on **architectural improvements and future-proofing**:
 
-**Lazy Collection Achievement**: The infrastructure for deferring Python module imports until test execution time has been **successfully implemented** and is **ACTIVE** for most test files. This provides the foundation for potential 5-10x speedups by bypassing pytest's import-heavy collection phase.
+**Lazy Collection Achievement**: The infrastructure for deferring Python module imports until test execution time has been **successfully implemented** and is **ACTIVE** for most test files. This provides the foundation for future optimizations and shows **1.02-1.08x speedup** on the current test suite (marginal gains scale with test suite size and import complexity).
 
 **Implementation Breakthroughs**:
 - ✅ **Duplicate collection solved**: Filter duplicates in pytest_collection_modifyitems hook
@@ -61,10 +61,12 @@ This release focuses on **architectural improvements and future-proofing**:
 - **Incremental caching** with 100% hit rates
 - **Optional parallel imports** for warm-up
 
-**Benchmark Results**:
-- Selective import: **1.65-1.72x faster** with `-k` or `-m` filters
+**Benchmark Results** (see BENCHMARK_RESULTS.md for details):
+- Lazy collection: **1.02-1.08x speedup** on 182-test suite (marginal on small suites, scales with size)
+- Selective import: **1.65-1.72x faster** with `-k` or `-m` filters (proven winner)
 - Cache effectiveness: **100% hit rate** on unchanged files
-- Ready for JSON serialization deployment when needed
+- All 182 tests passing with lazy collection enabled
+- Benchmark date: 2025-11-19, pytest 9.0.1, Python 3.11.14
 
 ### Testing
 - All 182 tests pass
@@ -269,7 +271,7 @@ This release focuses on **architectural improvements and future-proofing**:
 
 | Version | Date | Key Feature | Performance |
 |---------|------|-------------|-------------|
-| 0.6.0 | 2025-11 | Lazy Collection Infrastructure, Parametrize Detection, JSON FFI | Architecture for future 5-10x |
+| 0.6.0 | 2025-11 | Lazy Collection Infrastructure, Parametrize Detection, JSON FFI | 1.02-1.08x (scales with suite size) |
 | 0.5.2 | 2025-01 | Property-Based Tests, Python 3.13/3.14, Stricter Types | Quality & Robustness |
 | 0.5.1 | 2025-01 | Comprehensive Test Suite, Security | 182 tests, 60% coverage |
 | 0.5.0 | 2025-01 | Production-Ready Daemon | 100-1000x on re-runs |
