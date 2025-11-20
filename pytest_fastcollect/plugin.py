@@ -14,7 +14,7 @@ from _pytest.nodes import Collector
 
 try:
     from .pytest_fastcollect import FastCollector
-    from .cache import CollectionCache, CacheStats
+    # PHASE 3: CollectionCache removed - caching now in Rust
     from .filter import get_files_with_matching_tests
     from .daemon import start_daemon_background
     from .daemon_client import (
@@ -22,25 +22,20 @@ try:
         get_daemon_pid, stop_daemon, is_process_running
     )
     from .constants import DEFAULT_CPU_COUNT, BENCHMARK_TIMEOUT_SECONDS
-    from .lazy_collection import FastModule, FastFunction, FastClass
     RUST_AVAILABLE = True
 except ImportError:
     RUST_AVAILABLE = False
     FastCollector = None
-    CollectionCache = None
-    CacheStats = None
+    # PHASE 3: CacheStats removed - caching now in Rust
     get_files_with_matching_tests = None
     start_daemon_background = None
     DaemonClient = None
     get_socket_path = None
-    FastModule = None
-    FastFunction = None
-    FastClass = None
 
 
 def pytest_configure(config: Config) -> None:
     """Register the plugin."""
-    global _test_files_cache, _collection_cache, _cache_stats, _collected_data
+    global _test_files_cache, _collected_data
 
     if not RUST_AVAILABLE:
         if config.option.verbose > 0:
@@ -131,12 +126,18 @@ def pytest_configure(config: Config) -> None:
     fast_collector = FastCollector(root_path)
     use_cache = getattr(config.option, 'fastcollect_cache', True)
 
+    # PHASE 3: Set Rust cache path (Rust-side caching for maximum performance)
+    if use_cache:
+        cache_dir = _get_cache_dir(config)
+        cache_file = cache_dir / "rust_cache.json"
+        fast_collector.set_cache_path(str(cache_file))
+
     # Clear cache if requested
     if hasattr(config.option, 'fastcollect_clear_cache') and config.option.fastcollect_clear_cache:
         cache_dir = _get_cache_dir(config)
-        if CollectionCache:
-            cache = CollectionCache(cache_dir)
-            cache.clear()
+        cache_file = cache_dir / "rust_cache.json"
+        if cache_file.exists():
+            cache_file.unlink()
             if config.option.verbose >= 0:
                 print("FastCollect: Cache cleared", file=sys.stderr)
 
@@ -144,59 +145,27 @@ def pytest_configure(config: Config) -> None:
     keyword_expr = config.getoption("-k", default=None)
     marker_expr = config.getoption("-m", default=None)
 
-    # Pre-collect test files with Rust-side filtering (MAJOR OPTIMIZATION)
-    # This filters during parallel collection, avoiding Python object creation for filtered tests
-    if use_cache:
-        cache_dir = _get_cache_dir(config)
-        _collection_cache = CollectionCache(cache_dir)
+    # Pre-collect test files with Rust-side filtering AND caching (PHASE 3 OPTIMIZATION)
+    # The cache is now in Rust, eliminating FFI/JSON overhead!
+    try:
+        import json
+        json_data = fast_collector.collect_json_filtered(
+            keyword_expr=keyword_expr,
+            marker_expr=marker_expr
+        )
+        file_metadata_list = json.loads(json_data)
 
-        # Use JSON-based collection with filtering for maximum performance
-        try:
-            import json
-            json_data = fast_collector.collect_json_filtered(
-                keyword_expr=keyword_expr,
-                marker_expr=marker_expr
-            )
-            file_metadata_list = json.loads(json_data)
+        # Convert to expected format: {file_path: [test_items]}
+        collected_data = {
+            fm['path']: fm['test_items']
+            for fm in file_metadata_list
+        }
+    except Exception as e:
+        # Fallback to old method if JSON fails
+        print(f"Warning: JSON filtering failed ({e}), using legacy method", file=sys.stderr)
+        collected_data = fast_collector.collect()
 
-            # Convert to expected format: {file_path: [test_items]}
-            rust_metadata = {
-                fm['path']: fm['test_items']
-                for fm in file_metadata_list
-            }
-
-        except Exception as e:
-            # Fallback to old method if JSON fails
-            print(f"Warning: JSON filtering failed ({e}), using legacy method", file=sys.stderr)
-            rust_metadata = fast_collector.collect_with_metadata()
-
-        collected_data, cache_updated = _collection_cache.merge_with_rust_data(rust_metadata)
-
-        if cache_updated:
-            _collection_cache.save_cache()
-
-        _cache_stats = _collection_cache.stats
-    else:
-        # No cache: use JSON filtering for maximum speed
-        try:
-            import json
-            json_data = fast_collector.collect_json_filtered(
-                keyword_expr=keyword_expr,
-                marker_expr=marker_expr
-            )
-            file_metadata_list = json.loads(json_data)
-
-            # Convert to expected format
-            collected_data = {
-                fm['path']: fm['test_items']
-                for fm in file_metadata_list
-            }
-        except Exception as e:
-            # Fallback to old method
-            print(f"Warning: JSON filtering failed ({e}), using legacy method", file=sys.stderr)
-            collected_data = fast_collector.collect()
-
-        _cache_stats = None
+        # PHASE 3: _cache_stats removed - caching now in Rust
 
     _collected_data = collected_data
 
@@ -405,7 +374,7 @@ def pytest_report_header(config: Config) -> Optional[str]:
 # Store test files cache and collection cache
 _test_files_cache = None
 _collection_cache = None
-_cache_stats = None
+# PHASE 3: _cache_stats removed - caching now in Rust
 _collected_data = None
 
 
@@ -418,6 +387,11 @@ def _get_cache_dir(config: Config) -> Path:
 
 def _import_test_module(file_path: str, root_path: str) -> Tuple[str, bool, Optional[str]]:
     """Import a single test module.
+
+    PHASE 2.2: This function NEVER raises exceptions - it catches all errors
+    and returns them as (file_path, False, error_message). This ensures that
+    syntax errors, import errors, or other issues in one file don't crash the
+    entire parallel import process.
 
     Returns: (file_path, success, error_message)
     """
@@ -459,16 +433,21 @@ def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int,
 
     This pre-imports modules before pytest's collection phase, so when pytest
     calls importtestmodule(), the modules are already in sys.modules.
+
+    PHASE 2 OPTIMIZATION: Uses cpu_count() * 1.5 workers for IO-bound tasks.
+    IO-bound operations benefit from oversubscription (more workers than cores).
     """
     import time
 
     if not file_paths:
         return
 
-    # Get number of workers
+    # PHASE 2: Optimize worker count for IO-bound tasks (reading .py/.pyc files)
+    # IO-bound operations benefit from oversubscription
     workers = getattr(config.option, 'parallel_workers', None)
     if workers is None:
-        workers = os.cpu_count() or DEFAULT_CPU_COUNT
+        cpu_count = os.cpu_count() or DEFAULT_CPU_COUNT
+        workers = int(cpu_count * 1.5)  # 1.5x oversubscription for IO-bound
 
     root_path = str(config.rootpath)
 
@@ -482,6 +461,8 @@ def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int,
 
     # Use ThreadPoolExecutor for parallel imports
     # Even with GIL, I/O operations (reading .py/.pyc files) can benefit
+    failed_imports = []  # Track failed imports for reporting
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         # Submit all import tasks
         future_to_path = {
@@ -489,15 +470,26 @@ def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int,
             for file_path in file_paths
         }
 
-        # Collect results
+        # PHASE 2.2: Robust error handling - one bad file shouldn't crash everything
         for future in as_completed(future_to_path):
-            file_path, success, error = future.result()
-            if success:
-                success_count += 1
-            else:
+            file_path = future_to_path[future]
+            try:
+                file_path_result, success, error = future.result()
+                if success:
+                    success_count += 1
+                else:
+                    error_count += 1
+                    failed_imports.append((file_path_result, error))
+                    if config.option.verbose >= 2:
+                        print(f"\n  Warning: Failed to import {file_path_result}: {error}",
+                              file=sys.stderr)
+            except Exception as e:
+                # Catch unexpected exceptions from worker threads
                 error_count += 1
+                error_msg = f"Worker exception: {e}"
+                failed_imports.append((file_path, error_msg))
                 if config.option.verbose >= 2:
-                    print(f"\n  Warning: Failed to import {file_path}: {error}",
+                    print(f"\n  Error: Worker failed for {file_path}: {e}",
                           file=sys.stderr)
 
     elapsed = time.time() - start_time
@@ -507,6 +499,21 @@ def _parallel_import_modules(file_paths: Set[str], config: Config) -> Tuple[int,
         if error_count > 0:
             print(f"  Imported: {success_count}/{len(file_paths)} modules ({error_count} errors)",
                   file=sys.stderr)
+
+            # Show summary of errors at verbose >= 1 (detailed list at verbose >= 2 already shown above)
+            if config.option.verbose >= 1 and error_count <= 5:
+                # If only a few errors, show them all
+                for file_path, error in failed_imports:
+                    # Shorten error message for readability
+                    error_summary = error.split('\n')[0][:80]
+                    print(f"    - {Path(file_path).name}: {error_summary}", file=sys.stderr)
+            elif error_count > 5:
+                # Many errors - show first 3 and hint to use -vv
+                print(f"  First 3 import errors:", file=sys.stderr)
+                for file_path, error in failed_imports[:3]:
+                    error_summary = error.split('\n')[0][:80]
+                    print(f"    - {Path(file_path).name}: {error_summary}", file=sys.stderr)
+                print(f"  ... and {error_count - 3} more. Run with -vv to see all errors.", file=sys.stderr)
 
 
 def pytest_collect_file(file_path, parent):
@@ -731,8 +738,6 @@ def _run_benchmark(config: Config) -> None:
 
 def pytest_collection_finish(session: Session) -> None:
     """Called after collection has been performed and modified."""
-    global _cache_stats
-
-    # Display cache statistics if available and verbose
-    if _cache_stats and session.config.option.verbose >= 0:
-        print(f"\n{_cache_stats}", file=sys.stderr)
+    # PHASE 3: Cache stats removed - caching now happens in Rust
+    # The Rust cache automatically saves on collection completion
+    pass

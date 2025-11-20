@@ -6,8 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use std::time::SystemTime;
 use walkdir::WalkDir;
+
+// PHASE 3: Rust-side caching constants
+const CACHE_VERSION: &str = "1.0";
+const MTIME_TOLERANCE_SECONDS: f64 = 0.01;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestItem {
@@ -33,6 +38,20 @@ struct FileMetadata {
     path: String,
     mtime: f64,
     test_items: Vec<TestItem>,
+}
+
+/// PHASE 3: Cache entry for storing parsed test data with modification time
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CacheEntry {
+    mtime: f64,
+    items: Vec<TestItem>,
+}
+
+/// PHASE 3: Cache structure for persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CacheData {
+    version: String,
+    entries: HashMap<String, CacheEntry>,
 }
 
 /// Test filter for keyword and marker expressions
@@ -179,6 +198,10 @@ struct FastCollector {
     root_path: PathBuf,
     test_patterns: Vec<String>,
     ignore_patterns: Vec<String>,
+    // PHASE 3: Rust-side caching to eliminate FFI overhead
+    // Using RwLock for thread-safe interior mutability (works with Rayon parallel iterators)
+    cache_path: RwLock<Option<PathBuf>>,
+    cache: RwLock<HashMap<String, CacheEntry>>,
 }
 
 #[pymethods]
@@ -200,7 +223,18 @@ impl FastCollector {
                 ".eggs".to_string(),
                 "*.egg-info".to_string(),
             ],
+            // PHASE 3: Initialize cache (empty until cache_path is set)
+            cache_path: RwLock::new(None),
+            cache: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// PHASE 3: Set cache path and load existing cache
+    fn set_cache_path(&self, cache_path: String) -> PyResult<()> {
+        let path = PathBuf::from(cache_path);
+        *self.cache_path.write().unwrap() = Some(path);
+        self.load_cache();
+        Ok(())
     }
 
     /// Collect all test files and parse them for test items
@@ -325,10 +359,13 @@ impl FastCollector {
         let test_files = self.find_test_files();
         let filter = TestFilter::new(keyword_expr, marker_expr);
 
-        // Use rayon for parallel processing WITH filtering
+        // PHASE 3: Use cache to avoid re-parsing unchanged files
+        // Use rayon for parallel processing WITH caching AND filtering
         let file_metadata: Vec<FileMetadata> = test_files
             .par_iter()
             .filter_map(|file_path| {
+                let file_path_str = file_path.to_string_lossy().to_string();
+
                 // Get file modification time
                 let mtime = match fs::metadata(file_path) {
                     Ok(metadata) => {
@@ -345,8 +382,16 @@ impl FastCollector {
                     Err(_) => 0.0,
                 };
 
-                // Parse test items
-                let all_items = self.parse_test_file(file_path).unwrap_or_default();
+                // PHASE 3: Try to get items from cache first
+                let all_items = if let Some(cached_items) = self.get_cached_items(&file_path_str, mtime) {
+                    // Cache hit! Use cached items (avoids AST parsing)
+                    cached_items
+                } else {
+                    // Cache miss - parse file and update cache
+                    let parsed_items = self.parse_test_file(file_path).unwrap_or_default();
+                    self.update_cache(file_path_str.clone(), mtime, parsed_items.clone());
+                    parsed_items
+                };
 
                 // CRITICAL: Apply filter HERE in Rust, not in Python!
                 // This avoids creating Python objects for filtered-out tests
@@ -361,12 +406,15 @@ impl FastCollector {
                 }
 
                 Some(FileMetadata {
-                    path: file_path.to_string_lossy().to_string(),
+                    path: file_path_str,
                     mtime,
                     test_items,
                 })
             })
             .collect();
+
+        // PHASE 3: Save cache after collection (non-fatal if it fails)
+        let _ = self.save_cache();
 
         // Serialize to JSON
         serde_json::to_string(&file_metadata)
@@ -375,6 +423,75 @@ impl FastCollector {
 }
 
 impl FastCollector {
+    /// PHASE 3: Load cache from disk
+    fn load_cache(&self) {
+        let cache_path_opt = self.cache_path.read().unwrap().clone();
+        if let Some(cache_path) = cache_path_opt {
+            if cache_path.exists() {
+                match fs::read_to_string(&cache_path) {
+                    Ok(contents) => {
+                        match serde_json::from_str::<CacheData>(&contents) {
+                            Ok(cache_data) => {
+                                // Check version
+                                if cache_data.version == CACHE_VERSION {
+                                    *self.cache.write().unwrap() = cache_data.entries;
+                                } else {
+                                    // Version mismatch, start fresh
+                                    self.cache.write().unwrap().clear();
+                                }
+                            }
+                            Err(_) => {
+                                // Corrupted cache, start fresh
+                                self.cache.write().unwrap().clear();
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Can't read cache, start fresh
+                        self.cache.write().unwrap().clear();
+                    }
+                }
+            }
+        }
+    }
+
+    /// PHASE 3: Save cache to disk
+    fn save_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let cache_path_opt = self.cache_path.read().unwrap().clone();
+        if let Some(cache_path) = cache_path_opt {
+            // Ensure parent directory exists
+            if let Some(parent) = cache_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            let cache_data = CacheData {
+                version: CACHE_VERSION.to_string(),
+                entries: self.cache.read().unwrap().clone(),
+            };
+
+            let json = serde_json::to_string_pretty(&cache_data)?;
+            fs::write(cache_path, json)?;
+        }
+        Ok(())
+    }
+
+    /// PHASE 3: Get cached data for a file if it's still valid
+    fn get_cached_items(&self, file_path: &str, current_mtime: f64) -> Option<Vec<TestItem>> {
+        let cache = self.cache.read().unwrap();
+        if let Some(entry) = cache.get(file_path) {
+            // Check if mtime matches (within tolerance)
+            if (entry.mtime - current_mtime).abs() < MTIME_TOLERANCE_SECONDS {
+                return Some(entry.items.clone());
+            }
+        }
+        None
+    }
+
+    /// PHASE 3: Update cache with newly parsed data
+    fn update_cache(&self, file_path: String, mtime: f64, items: Vec<TestItem>) {
+        self.cache.write().unwrap().insert(file_path, CacheEntry { mtime, items });
+    }
+
     /// Find all test files in the directory tree
     fn find_test_files(&self) -> Vec<PathBuf> {
         WalkDir::new(&self.root_path)
