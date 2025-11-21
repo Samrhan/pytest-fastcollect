@@ -145,6 +145,12 @@ def pytest_configure(config: Config) -> None:
     keyword_expr = config.getoption("-k", default=None)
     marker_expr = config.getoption("-m", default=None)
 
+    # Normalize empty strings to None (pytest returns '' for unset options)
+    if keyword_expr == '':
+        keyword_expr = None
+    if marker_expr == '':
+        marker_expr = None
+
     # Pre-collect test files with Rust-side filtering AND caching (PHASE 3 OPTIMIZATION)
     # The cache is now in Rust, eliminating FFI/JSON overhead!
     try:
