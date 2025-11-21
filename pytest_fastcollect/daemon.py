@@ -78,6 +78,10 @@ class CollectionDaemon:
         self.socket = None
         self.start_time = time.time()
 
+        # PHASE 4.2: Track file modification times for smart reload
+        # Maps file_path -> (module_name, mtime)
+        self.file_mtimes: Dict[str, tuple[str, float]] = {}
+
         # Socket strategy for cross-platform support
         self.socket_strategy = create_socket_strategy(socket_path)
 
@@ -232,6 +236,14 @@ class CollectionDaemon:
                     sys.modules[module_name] = module
                     spec.loader.exec_module(module)
                     self.imported_modules.add(module_name)
+
+                    # PHASE 4.2: Track mtime for smart reload
+                    try:
+                        mtime = path_obj.stat().st_mtime
+                        self.file_mtimes[str(path_obj)] = (module_name, mtime)
+                    except OSError:
+                        pass  # File might be deleted, skip mtime tracking
+
                     success_count += 1
                     self.logger.debug(f"Imported module: {module_name}")
                 else:
@@ -380,54 +392,180 @@ class CollectionDaemon:
 
         return " ".join(parts)
 
-    def handle_reload_request(self, file_paths: Set[str]) -> Dict[str, Any]:
-        """Handle reload request - re-import specified modules.
+    def smart_reload_modules(self, file_paths: Set[str]) -> Dict[str, Any]:
+        """PHASE 4.2: Smart reload - only reload modules that have changed.
+
+        Checks file mtimes and only reloads modules where the file has been modified.
+        Uses importlib.reload() for efficiency.
 
         Args:
-            file_paths: Set of file paths to reload
+            file_paths: Set of file paths to check
 
         Returns:
-            Reload result with timing and count information
+            Dict with reload statistics and timing
         """
         start = time.time()
 
-        try:
-            self.logger.info(f"Processing reload request for {len(file_paths)} files")
+        modules_unchanged = 0
+        modules_reloaded = 0
+        modules_new = 0
+        modules_deleted = 0
+        modules_failed = 0
 
-            # Clear specified modules from sys.modules
-            cleared_count = 0
-            for module_name in list(self.imported_modules):
-                if module_name in sys.modules:
+        self.logger.info(f"Smart reload: Checking {len(file_paths)} files for changes")
+
+        # Track which files are still present
+        current_files = set()
+
+        for file_path in file_paths:
+            try:
+                path_obj = Path(file_path).resolve()
+                current_files.add(str(path_obj))
+
+                # Get current mtime
+                try:
+                    current_mtime = path_obj.stat().st_mtime
+                except OSError:
+                    # File deleted - remove from tracking
+                    if str(path_obj) in self.file_mtimes:
+                        module_name, _ = self.file_mtimes[str(path_obj)]
+                        if module_name in sys.modules:
+                            try:
+                                del sys.modules[module_name]
+                                self.imported_modules.discard(module_name)
+                                modules_deleted += 1
+                                self.logger.debug(f"Removed deleted module: {module_name}")
+                            except Exception as e:
+                                self.logger.warning(f"Failed to remove deleted module {module_name}: {e}")
+                        del self.file_mtimes[str(path_obj)]
+                    continue
+
+                # Check if we've seen this file before
+                if str(path_obj) in self.file_mtimes:
+                    module_name, old_mtime = self.file_mtimes[str(path_obj)]
+
+                    # File hasn't changed - skip reload
+                    if abs(current_mtime - old_mtime) < 0.01:  # 10ms tolerance
+                        modules_unchanged += 1
+                        continue
+
+                    # File changed - reload it
+                    if module_name in sys.modules:
+                        try:
+                            import importlib
+                            importlib.reload(sys.modules[module_name])
+                            self.file_mtimes[str(path_obj)] = (module_name, current_mtime)
+                            modules_reloaded += 1
+                            self.logger.debug(f"Reloaded changed module: {module_name}")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to reload {module_name}: {e}")
+                            modules_failed += 1
+                    else:
+                        # Module was unloaded somehow - reimport it
+                        try:
+                            rel_path = path_obj.relative_to(self.root_path)
+                            module_name = str(rel_path.with_suffix('')).replace(os.sep, '.')
+
+                            spec = importlib.util.spec_from_file_location(module_name, str(path_obj))
+                            if spec and spec.loader:
+                                module = importlib.util.module_from_spec(spec)
+                                sys.modules[module_name] = module
+                                spec.loader.exec_module(module)
+                                self.imported_modules.add(module_name)
+                                self.file_mtimes[str(path_obj)] = (module_name, current_mtime)
+                                modules_new += 1
+                                self.logger.debug(f"Reimported module: {module_name}")
+                            else:
+                                modules_failed += 1
+                        except Exception as e:
+                            self.logger.warning(f"Failed to reimport {file_path}: {e}")
+                            modules_failed += 1
+                else:
+                    # New file - import it
                     try:
-                        del sys.modules[module_name]
-                        cleared_count += 1
+                        rel_path = path_obj.relative_to(self.root_path)
+                        module_name = str(rel_path.with_suffix('')).replace(os.sep, '.')
+
+                        if module_name not in sys.modules:
+                            spec = importlib.util.spec_from_file_location(module_name, str(path_obj))
+                            if spec and spec.loader:
+                                module = importlib.util.module_from_spec(spec)
+                                sys.modules[module_name] = module
+                                spec.loader.exec_module(module)
+                                self.imported_modules.add(module_name)
+                                self.file_mtimes[str(path_obj)] = (module_name, current_mtime)
+                                modules_new += 1
+                                self.logger.debug(f"Imported new module: {module_name}")
+                            else:
+                                modules_failed += 1
+                        else:
+                            # Already imported, just track mtime
+                            self.file_mtimes[str(path_obj)] = (module_name, current_mtime)
+                            modules_unchanged += 1
                     except Exception as e:
-                        self.logger.warning(f"Failed to clear module {module_name}: {e}")
+                        self.logger.warning(f"Failed to import new file {file_path}: {e}")
+                        modules_failed += 1
 
-            self.imported_modules.clear()
-            self.logger.info(f"Cleared {cleared_count} modules from cache")
+            except Exception as e:
+                self.logger.warning(f"Error processing {file_path}: {e}")
+                modules_failed += 1
 
-            # Re-import all modules
-            count = self.import_all_modules(file_paths)
+        # Clean up mtimes for files that no longer exist
+        removed_files = set(self.file_mtimes.keys()) - current_files
+        for removed_file in removed_files:
+            module_name, _ = self.file_mtimes[removed_file]
+            if module_name in sys.modules:
+                try:
+                    del sys.modules[module_name]
+                    self.imported_modules.discard(module_name)
+                    modules_deleted += 1
+                except Exception:
+                    pass
+            del self.file_mtimes[removed_file]
 
-            elapsed = time.time() - start
+        elapsed = time.time() - start
 
-            response = {
-                "status": "reloaded",
-                "modules_cleared": cleared_count,
-                "modules_reloaded": count,
-                "reload_time": elapsed,
-            }
+        result = {
+            "status": "reloaded",
+            "modules_unchanged": modules_unchanged,
+            "modules_reloaded": modules_reloaded,
+            "modules_new": modules_new,
+            "modules_deleted": modules_deleted,
+            "modules_failed": modules_failed,
+            "total_files": len(file_paths),
+            "reload_time": elapsed,
+        }
 
-            self.logger.info(f"Reload completed in {elapsed:.2f}s")
-            return response
+        self.logger.info(
+            f"Smart reload completed in {elapsed:.2f}s: "
+            f"{modules_unchanged} unchanged, {modules_reloaded} reloaded, "
+            f"{modules_new} new, {modules_deleted} deleted, {modules_failed} failed"
+        )
+
+        return result
+
+    def handle_reload_request(self, file_paths: Set[str]) -> Dict[str, Any]:
+        """Handle reload request - uses smart reload to only reload changed modules.
+
+        PHASE 4.2: Now uses smart_reload_modules() which checks mtimes and only
+        reloads modules that have actually changed, providing much faster reloads.
+
+        Args:
+            file_paths: Set of file paths to check and reload if changed
+
+        Returns:
+            Reload result with timing and detailed count information
+        """
+        try:
+            self.logger.info(f"Processing smart reload request for {len(file_paths)} files")
+            return self.smart_reload_modules(file_paths)
 
         except Exception as e:
             self.logger.error(f"Reload request failed: {e}", exc_info=True)
             return {
                 "status": "error",
                 "error": str(e),
-                "reload_time": time.time() - start
+                "reload_time": 0
             }
 
     def handle_health_request(self) -> Dict[str, Any]:
@@ -849,8 +987,8 @@ def _start_daemon_unix(root_path: str, socket_path: str, file_paths: Optional[Se
             # Second fork: Prevent acquiring terminal
             pid2 = os.fork()
             if pid2 > 0:
-                # First child exits
-                sys.exit(0)
+                # First child exits - use os._exit to avoid pytest catching SystemExit
+                os._exit(0)
 
             # Grandchild process - the actual daemon
 
@@ -875,11 +1013,11 @@ def _start_daemon_unix(root_path: str, socket_path: str, file_paths: Optional[Se
 
             # Start daemon
             start_daemon(root_path, socket_path, file_paths, log_file=str(log_file))
-            sys.exit(0)
+            os._exit(0)  # Use os._exit to avoid pytest catching SystemExit
 
         except Exception as e:
             print(f"Error in daemon child process: {e}", file=sys.stderr, flush=True)
-            sys.exit(1)
+            os._exit(1)  # Use os._exit to avoid pytest catching SystemExit
 
     except OSError as e:
         raise DaemonError(f"Failed to fork daemon process: {e}")

@@ -2,13 +2,19 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rayon::prelude::*;
 use rustpython_parser::{ast, Parse};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
-#[derive(Debug, Clone)]
+// PHASE 3: Rust-side caching constants
+const CACHE_VERSION: &str = "1.0";
+const MTIME_TOLERANCE_SECONDS: f64 = 0.01;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestItem {
     file_path: String,
     name: String,
@@ -16,20 +22,174 @@ struct TestItem {
     item_type: TestItemType,
     class_name: Option<String>,
     markers: Vec<String>,
+    /// Parametrize info: list of parameter sets (for generating correct number of test nodes)
+    parametrize_count: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum TestItemType {
     Function,
     Class,
     Method,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileMetadata {
     path: String,
     mtime: f64,
     test_items: Vec<TestItem>,
+}
+
+/// PHASE 3: Cache entry for storing parsed test data with modification time
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CacheEntry {
+    mtime: f64,
+    items: Vec<TestItem>,
+}
+
+/// PHASE 3: Cache structure for persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CacheData {
+    version: String,
+    entries: HashMap<String, CacheEntry>,
+}
+
+/// Test filter for keyword and marker expressions
+#[derive(Debug, Clone)]
+struct TestFilter {
+    keyword_expr: Option<String>,
+    marker_expr: Option<String>,
+}
+
+impl TestFilter {
+    fn new(keyword_expr: Option<String>, marker_expr: Option<String>) -> Self {
+        TestFilter {
+            keyword_expr,
+            marker_expr,
+        }
+    }
+
+    /// Check if a test item matches the filter criteria
+    fn matches(&self, item: &TestItem) -> bool {
+        // If no filters, everything matches
+        if self.keyword_expr.is_none() && self.marker_expr.is_none() {
+            return true;
+        }
+
+        // Check keyword filter
+        if let Some(ref expr) = self.keyword_expr {
+            if !self.matches_keyword(item, expr) {
+                return false;
+            }
+        }
+
+        // Check marker filter
+        if let Some(ref expr) = self.marker_expr {
+            if !self.matches_marker(item, expr) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Check if test matches keyword expression (-k)
+    fn matches_keyword(&self, item: &TestItem, expr: &str) -> bool {
+        // Build searchable text from test item
+        let mut parts = vec![item.name.to_lowercase()];
+
+        if let Some(ref class_name) = item.class_name {
+            parts.push(class_name.to_lowercase());
+        }
+
+        // Add filename without extension
+        if let Some(filename) = Path::new(&item.file_path).file_stem() {
+            parts.push(filename.to_string_lossy().to_lowercase());
+        }
+
+        let search_text = parts.join(" ");
+
+        self.evaluate_expression(expr, &search_text)
+    }
+
+    /// Check if test matches marker expression (-m)
+    fn matches_marker(&self, item: &TestItem, expr: &str) -> bool {
+        let marker_set: HashSet<String> = item
+            .markers
+            .iter()
+            .map(|m| m.to_lowercase())
+            .collect();
+
+        self.evaluate_marker_expression(expr, &marker_set)
+    }
+
+    /// Evaluate keyword expression against search text
+    fn evaluate_expression(&self, expr: &str, search_text: &str) -> bool {
+        let expr = expr.to_lowercase().trim().to_string();
+
+        // Handle simple case: single keyword
+        if !expr.contains(" and ") && !expr.contains(" or ") && !expr.starts_with("not ") {
+            return search_text.contains(&expr);
+        }
+
+        // Handle NOT
+        if expr.starts_with("not ") {
+            let keyword = expr[4..].trim();
+            return !search_text.contains(keyword);
+        }
+
+        // Handle AND (has higher precedence than OR in pytest)
+        if expr.contains(" and ") {
+            let parts: Vec<&str> = expr.split(" and ").collect();
+            return parts
+                .iter()
+                .all(|p| self.evaluate_expression(p.trim(), search_text));
+        }
+
+        // Handle OR
+        if expr.contains(" or ") {
+            let parts: Vec<&str> = expr.split(" or ").collect();
+            return parts
+                .iter()
+                .any(|p| self.evaluate_expression(p.trim(), search_text));
+        }
+
+        search_text.contains(&expr)
+    }
+
+    /// Evaluate marker expression against marker set
+    fn evaluate_marker_expression(&self, expr: &str, markers: &HashSet<String>) -> bool {
+        let expr = expr.to_lowercase().trim().to_string();
+
+        // Handle simple case: single marker
+        if !expr.contains(" and ") && !expr.contains(" or ") && !expr.starts_with("not ") {
+            return markers.contains(&expr);
+        }
+
+        // Handle NOT
+        if expr.starts_with("not ") {
+            let marker = expr[4..].trim();
+            return !markers.contains(marker);
+        }
+
+        // Handle AND
+        if expr.contains(" and ") {
+            let parts: Vec<&str> = expr.split(" and ").collect();
+            return parts
+                .iter()
+                .all(|p| self.evaluate_marker_expression(p.trim(), markers));
+        }
+
+        // Handle OR
+        if expr.contains(" or ") {
+            let parts: Vec<&str> = expr.split(" or ").collect();
+            return parts
+                .iter()
+                .any(|p| self.evaluate_marker_expression(p.trim(), markers));
+        }
+
+        markers.contains(&expr)
+    }
 }
 
 /// Fast test collector using Rust
@@ -38,6 +198,10 @@ struct FastCollector {
     root_path: PathBuf,
     test_patterns: Vec<String>,
     ignore_patterns: Vec<String>,
+    // PHASE 3: Rust-side caching to eliminate FFI overhead
+    // Using RwLock for thread-safe interior mutability (works with Rayon parallel iterators)
+    cache_path: RwLock<Option<PathBuf>>,
+    cache: RwLock<HashMap<String, CacheEntry>>,
 }
 
 #[pymethods]
@@ -59,7 +223,18 @@ impl FastCollector {
                 ".eggs".to_string(),
                 "*.egg-info".to_string(),
             ],
+            // PHASE 3: Initialize cache (empty until cache_path is set)
+            cache_path: RwLock::new(None),
+            cache: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// PHASE 3: Set cache path and load existing cache
+    fn set_cache_path(&self, cache_path: String) -> PyResult<()> {
+        let path = PathBuf::from(cache_path);
+        *self.cache_path.write().unwrap() = Some(path);
+        self.load_cache();
+        Ok(())
     }
 
     /// Collect all test files and parse them for test items
@@ -127,9 +302,196 @@ impl FastCollector {
         let items = self.parse_test_file(&path).unwrap_or_default();
         self.items_to_python(py, &items)
     }
+
+    /// Collect all test files and return metadata as JSON string
+    /// This is MUCH faster than building PyDict/PyList objects across FFI boundary
+    fn collect_json(&self) -> PyResult<String> {
+        let test_files = self.find_test_files();
+
+        // Use rayon for parallel processing
+        let file_metadata: Vec<FileMetadata> = test_files
+            .par_iter()
+            .filter_map(|file_path| {
+                // Get file modification time
+                let mtime = match fs::metadata(file_path) {
+                    Ok(metadata) => {
+                        match metadata.modified() {
+                            Ok(time) => {
+                                match time.duration_since(SystemTime::UNIX_EPOCH) {
+                                    Ok(duration) => duration.as_secs_f64(),
+                                    Err(_) => 0.0,
+                                }
+                            }
+                            Err(_) => 0.0,
+                        }
+                    }
+                    Err(_) => 0.0,
+                };
+
+                // Parse test items
+                let test_items = self.parse_test_file(file_path).unwrap_or_default();
+
+                if test_items.is_empty() {
+                    return None;
+                }
+
+                Some(FileMetadata {
+                    path: file_path.to_string_lossy().to_string(),
+                    mtime,
+                    test_items,
+                })
+            })
+            .collect();
+
+        // Serialize to JSON in one go - much faster than thousands of FFI calls!
+        serde_json::to_string(&file_metadata)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("JSON serialization failed: {}", e)))
+    }
+
+    /// Collect with filtering applied in Rust (MUCH faster than Python filtering)
+    /// This is the "quick win" optimization - filters tests during Rayon parallel iteration
+    #[pyo3(signature = (keyword_expr=None, marker_expr=None))]
+    fn collect_json_filtered(
+        &self,
+        keyword_expr: Option<String>,
+        marker_expr: Option<String>,
+    ) -> PyResult<String> {
+        let test_files = self.find_test_files();
+        let filter = TestFilter::new(keyword_expr, marker_expr);
+
+        // PHASE 3: Use cache to avoid re-parsing unchanged files
+        // Use rayon for parallel processing WITH caching AND filtering
+        let file_metadata: Vec<FileMetadata> = test_files
+            .par_iter()
+            .filter_map(|file_path| {
+                let file_path_str = file_path.to_string_lossy().to_string();
+
+                // Get file modification time
+                let mtime = match fs::metadata(file_path) {
+                    Ok(metadata) => {
+                        match metadata.modified() {
+                            Ok(time) => {
+                                match time.duration_since(SystemTime::UNIX_EPOCH) {
+                                    Ok(duration) => duration.as_secs_f64(),
+                                    Err(_) => 0.0,
+                                }
+                            }
+                            Err(_) => 0.0,
+                        }
+                    }
+                    Err(_) => 0.0,
+                };
+
+                // PHASE 3: Try to get items from cache first
+                let all_items = if let Some(cached_items) = self.get_cached_items(&file_path_str, mtime) {
+                    // Cache hit! Use cached items (avoids AST parsing)
+                    cached_items
+                } else {
+                    // Cache miss - parse file and update cache
+                    let parsed_items = self.parse_test_file(file_path).unwrap_or_default();
+                    self.update_cache(file_path_str.clone(), mtime, parsed_items.clone());
+                    parsed_items
+                };
+
+                // CRITICAL: Apply filter HERE in Rust, not in Python!
+                // This avoids creating Python objects for filtered-out tests
+                let test_items: Vec<TestItem> = all_items
+                    .into_iter()
+                    .filter(|item| filter.matches(item))
+                    .collect();
+
+                // Skip file if no matching tests
+                if test_items.is_empty() {
+                    return None;
+                }
+
+                Some(FileMetadata {
+                    path: file_path_str,
+                    mtime,
+                    test_items,
+                })
+            })
+            .collect();
+
+        // PHASE 3: Save cache after collection (non-fatal if it fails)
+        let _ = self.save_cache();
+
+        // Serialize to JSON
+        serde_json::to_string(&file_metadata)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("JSON serialization failed: {}", e)))
+    }
 }
 
 impl FastCollector {
+    /// PHASE 3: Load cache from disk
+    fn load_cache(&self) {
+        let cache_path_opt = self.cache_path.read().unwrap().clone();
+        if let Some(cache_path) = cache_path_opt {
+            if cache_path.exists() {
+                match fs::read_to_string(&cache_path) {
+                    Ok(contents) => {
+                        match serde_json::from_str::<CacheData>(&contents) {
+                            Ok(cache_data) => {
+                                // Check version
+                                if cache_data.version == CACHE_VERSION {
+                                    *self.cache.write().unwrap() = cache_data.entries;
+                                } else {
+                                    // Version mismatch, start fresh
+                                    self.cache.write().unwrap().clear();
+                                }
+                            }
+                            Err(_) => {
+                                // Corrupted cache, start fresh
+                                self.cache.write().unwrap().clear();
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Can't read cache, start fresh
+                        self.cache.write().unwrap().clear();
+                    }
+                }
+            }
+        }
+    }
+
+    /// PHASE 3: Save cache to disk
+    fn save_cache(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let cache_path_opt = self.cache_path.read().unwrap().clone();
+        if let Some(cache_path) = cache_path_opt {
+            // Ensure parent directory exists
+            if let Some(parent) = cache_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            let cache_data = CacheData {
+                version: CACHE_VERSION.to_string(),
+                entries: self.cache.read().unwrap().clone(),
+            };
+
+            let json = serde_json::to_string_pretty(&cache_data)?;
+            fs::write(cache_path, json)?;
+        }
+        Ok(())
+    }
+
+    /// PHASE 3: Get cached data for a file if it's still valid
+    fn get_cached_items(&self, file_path: &str, current_mtime: f64) -> Option<Vec<TestItem>> {
+        let cache = self.cache.read().unwrap();
+        if let Some(entry) = cache.get(file_path) {
+            // Check if mtime matches (within tolerance)
+            if (entry.mtime - current_mtime).abs() < MTIME_TOLERANCE_SECONDS {
+                return Some(entry.items.clone());
+            }
+        }
+        None
+    }
+
+    /// PHASE 3: Update cache with newly parsed data
+    fn update_cache(&self, file_path: String, mtime: f64, items: Vec<TestItem>) {
+        self.cache.write().unwrap().insert(file_path, CacheEntry { mtime, items });
+    }
+
     /// Find all test files in the directory tree
     fn find_test_files(&self) -> Vec<PathBuf> {
         WalkDir::new(&self.root_path)
@@ -256,6 +618,7 @@ impl FastCollector {
                 let name = func.name.as_str();
                 if self.is_test_function(name) {
                     let markers = self.extract_markers(&func.decorator_list);
+                    let parametrize_count = self.extract_parametrize_count(&func.decorator_list);
                     items.push(TestItem {
                         file_path: file_path.to_string(),
                         name: name.to_string(),
@@ -267,6 +630,7 @@ impl FastCollector {
                         },
                         class_name: class_context.map(|s| s.to_string()),
                         markers,
+                        parametrize_count,
                     });
                 }
             }
@@ -282,6 +646,7 @@ impl FastCollector {
                         item_type: TestItemType::Class,
                         class_name: None,
                         markers,
+                        parametrize_count: None,
                     });
 
                     // Extract methods from the class
@@ -334,6 +699,54 @@ impl FastCollector {
         markers
     }
 
+    /// Extract parametrize count from decorator list
+    /// Parses @pytest.mark.parametrize("arg", [val1, val2, ...]) to count parameter sets
+    /// This allows us to generate the correct number of test nodes WITHOUT importing Python code!
+    fn extract_parametrize_count(&self, decorators: &[ast::Expr]) -> Option<usize> {
+        for decorator in decorators {
+            // Look for @pytest.mark.parametrize(...) or @mark.parametrize(...)
+            if let ast::Expr::Call(call) = decorator {
+                if let ast::Expr::Attribute(attr) = call.func.as_ref() {
+                    let is_parametrize = attr.attr.as_str() == "parametrize";
+
+                    if !is_parametrize {
+                        continue;
+                    }
+
+                    // Check if it's pytest.mark.parametrize or mark.parametrize
+                    let is_pytest_mark = if let ast::Expr::Attribute(parent_attr) = attr.value.as_ref() {
+                        if let ast::Expr::Name(name) = parent_attr.value.as_ref() {
+                            name.id.as_str() == "pytest" && parent_attr.attr.as_str() == "mark"
+                        } else {
+                            false
+                        }
+                    } else if let ast::Expr::Name(name) = attr.value.as_ref() {
+                        name.id.as_str() == "mark"
+                    } else {
+                        false
+                    };
+
+                    if !is_pytest_mark {
+                        continue;
+                    }
+
+                    // Try to extract the parameter count from the second argument
+                    // @pytest.mark.parametrize("arg", [val1, val2, val3]) -> count = 3
+                    // @pytest.mark.parametrize("arg1,arg2", [(v1,v2), (v3,v4)]) -> count = 2
+                    if call.args.len() >= 2 {
+                        if let ast::Expr::List(list_expr) = &call.args[1] {
+                            return Some(list_expr.elts.len());
+                        } else if let ast::Expr::Tuple(tuple_expr) = &call.args[1] {
+                            return Some(tuple_expr.elts.len());
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     /// Check if a function name indicates a test function
     fn is_test_function(&self, name: &str) -> bool {
         name.starts_with("test_") || name.starts_with("test")
@@ -377,6 +790,11 @@ impl FastCollector {
                 }
                 item_dict.set_item("markers", markers_list)?;
 
+                // Add parametrize count
+                if let Some(count) = item.parametrize_count {
+                    item_dict.set_item("parametrize_count", count)?;
+                }
+
                 items_list.append(item_dict)?;
             }
 
@@ -412,6 +830,11 @@ impl FastCollector {
                     markers_list.append(marker)?;
                 }
                 item_dict.set_item("markers", markers_list)?;
+
+                // Add parametrize count
+                if let Some(count) = item.parametrize_count {
+                    item_dict.set_item("parametrize_count", count)?;
+                }
 
                 items_list.append(item_dict)?;
             }

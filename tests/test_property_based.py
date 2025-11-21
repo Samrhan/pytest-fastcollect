@@ -20,7 +20,7 @@ import tempfile
 import json
 
 from pytest_fastcollect.filter import TestFilter, filter_collected_data
-from pytest_fastcollect.cache import CollectionCache, CacheStats
+# NOTE: CollectionCache removed in Phase 3 - caching now in Rust
 
 
 # Only define tests if hypothesis is available
@@ -171,139 +171,9 @@ else:
                 assert filter_normal.matches(test_without_keyword) is False
 
 
-    # ============================================================================
-    # Cache Property-Based Tests
-    # ============================================================================
+    # NOTE: TestCacheProperties removed - cache functionality moved to Rust in Phase 3
 
-    @pytest.mark.unit
-    class TestCacheProperties:
-        """Property-based tests for cache behavior."""
-
-        @given(
-            mtime=st.floats(min_value=1000000000.0, max_value=9999999999.0),
-            items_count=st.integers(min_value=0, max_value=100)
-        )
-        def test_cache_hit_on_same_mtime(self, mtime, items_count):
-            """Property: cache should hit when mtime hasn't changed."""
-            with tempfile.TemporaryDirectory() as tmpdir:
-                cache = CollectionCache(Path(tmpdir))
-
-                file_path = "/fake/test.py"
-                items = [{"name": f"test_{i}"} for i in range(items_count)]
-
-                # Update cache
-                cache.update_cache(file_path, mtime, items)
-
-                # Retrieve with same mtime should hit
-                result = cache.get_cached_data(file_path, mtime)
-                assert result == items
-                assert cache.stats.cache_hits == 1
-                assert cache.stats.cache_misses == 0
-
-        @given(
-            mtime1=st.floats(min_value=1000000000.0, max_value=5000000000.0),
-            mtime2=st.floats(min_value=5000000001.0, max_value=9999999999.0),
-        )
-        def test_cache_miss_on_different_mtime(self, mtime1, mtime2):
-            """Property: cache should miss when mtime changes significantly."""
-            assume(abs(mtime2 - mtime1) > 0.1)  # Significant difference
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                cache = CollectionCache(Path(tmpdir))
-
-                file_path = "/fake/test.py"
-                items = [{"name": "test_1"}]
-
-                # Update cache with mtime1
-                cache.update_cache(file_path, mtime1, items)
-
-                # Retrieve with mtime2 should miss
-                result = cache.get_cached_data(file_path, mtime2)
-                assert result is None
-                assert cache.stats.cache_misses == 1
-
-        @given(
-            num_files=st.integers(min_value=1, max_value=20),
-            num_items_per_file=st.integers(min_value=0, max_value=10)
-        )
-        def test_cache_persistence(self, num_files, num_items_per_file):
-            """Property: cache should persist across instances."""
-            with tempfile.TemporaryDirectory() as tmpdir:
-                cache_dir = Path(tmpdir)
-
-                # First instance - write data
-                cache1 = CollectionCache(cache_dir)
-                for i in range(num_files):
-                    file_path = f"/fake/test_{i}.py"
-                    items = [{"name": f"test_{j}"} for j in range(num_items_per_file)]
-                    cache1.update_cache(file_path, 1234567890.0 + i, items)
-                cache1.save_cache()
-
-                # Second instance - read data
-                cache2 = CollectionCache(cache_dir)
-                for i in range(num_files):
-                    file_path = f"/fake/test_{i}.py"
-                    result = cache2.get_cached_data(file_path, 1234567890.0 + i)
-                    assert result is not None
-                    assert len(result) == num_items_per_file
-
-        @given(
-            num_operations=st.integers(min_value=1, max_value=50)
-        )
-        def test_cache_stats_accuracy(self, num_operations):
-            """Property: cache stats should accurately track hits and misses."""
-            with tempfile.TemporaryDirectory() as tmpdir:
-                cache = CollectionCache(Path(tmpdir))
-
-                hits = 0
-                misses = 0
-
-                for i in range(num_operations):
-                    file_path = f"/fake/test_{i % 10}.py"  # Reuse some paths
-                    mtime = 1234567890.0 + (i % 5)  # Reuse some mtimes
-
-                    result = cache.get_cached_data(file_path, mtime)
-
-                    if result is None:
-                        misses += 1
-                        # Add to cache
-                        cache.update_cache(file_path, mtime, [{"name": f"test_{i}"}])
-                    else:
-                        hits += 1
-
-                assert cache.stats.cache_hits == hits
-                assert cache.stats.cache_misses == misses
-
-        @given(
-            items=st.lists(
-                st.dictionaries(
-                    st.text(min_size=1, max_size=20),
-                    st.one_of(st.text(max_size=50), st.integers(), st.booleans(), st.none())
-                ),
-                min_size=0,
-                max_size=50
-            )
-        )
-        def test_cache_handles_various_item_structures(self, items):
-            """Property: cache should handle various item structures."""
-            with tempfile.TemporaryDirectory() as tmpdir:
-                cache = CollectionCache(Path(tmpdir))
-
-                file_path = "/fake/test.py"
-                mtime = 1234567890.0
-
-                # Update cache with random items
-                cache.update_cache(file_path, mtime, items)
-                cache.save_cache()
-
-                # Reload and verify
-                cache2 = CollectionCache(Path(tmpdir))
-                result = cache2.get_cached_data(file_path, mtime)
-
-                assert result == items
-
-
-    # ============================================================================
+        # ============================================================================
     # String Expression Property-Based Tests
     # ============================================================================
 
