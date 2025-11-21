@@ -987,8 +987,8 @@ def _start_daemon_unix(root_path: str, socket_path: str, file_paths: Optional[Se
             # Second fork: Prevent acquiring terminal
             pid2 = os.fork()
             if pid2 > 0:
-                # First child exits
-                sys.exit(0)
+                # First child exits - use os._exit to avoid pytest catching SystemExit
+                os._exit(0)
 
             # Grandchild process - the actual daemon
 
@@ -1013,11 +1013,11 @@ def _start_daemon_unix(root_path: str, socket_path: str, file_paths: Optional[Se
 
             # Start daemon
             start_daemon(root_path, socket_path, file_paths, log_file=str(log_file))
-            sys.exit(0)
+            os._exit(0)  # Use os._exit to avoid pytest catching SystemExit
 
         except Exception as e:
             print(f"Error in daemon child process: {e}", file=sys.stderr, flush=True)
-            sys.exit(1)
+            os._exit(1)  # Use os._exit to avoid pytest catching SystemExit
 
     except OSError as e:
         raise DaemonError(f"Failed to fork daemon process: {e}")
