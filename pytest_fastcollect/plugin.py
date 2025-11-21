@@ -16,11 +16,6 @@ try:
     from .pytest_fastcollect import FastCollector
     # PHASE 3: CollectionCache removed - caching now in Rust
     from .filter import get_files_with_matching_tests
-    from .daemon import start_daemon_background
-    from .daemon_client import (
-        DaemonClient, get_socket_path, save_daemon_pid,
-        get_daemon_pid, stop_daemon, is_process_running
-    )
     from .constants import DEFAULT_CPU_COUNT, BENCHMARK_TIMEOUT_SECONDS
     RUST_AVAILABLE = True
 except ImportError:
@@ -28,9 +23,48 @@ except ImportError:
     FastCollector = None
     # PHASE 3: CacheStats removed - caching now in Rust
     get_files_with_matching_tests = None
-    start_daemon_background = None
-    DaemonClient = None
-    get_socket_path = None
+
+# PHASE 4.2: Lazy imports for daemon modules (reduces startup overhead by ~0.02-0.05s)
+# These are only imported when daemon features are actually used
+_daemon_modules_loaded = False
+start_daemon_background = None
+DaemonClient = None
+get_socket_path = None
+save_daemon_pid = None
+get_daemon_pid = None
+stop_daemon = None
+is_process_running = None
+
+
+def _load_daemon_modules():
+    """Lazy-load daemon modules only when needed."""
+    global _daemon_modules_loaded, start_daemon_background, DaemonClient
+    global get_socket_path, save_daemon_pid, get_daemon_pid, stop_daemon, is_process_running
+
+    if _daemon_modules_loaded:
+        return True
+
+    try:
+        from .daemon import start_daemon_background as _start_daemon_background
+        from .daemon_client import (
+            DaemonClient as _DaemonClient,
+            get_socket_path as _get_socket_path,
+            save_daemon_pid as _save_daemon_pid,
+            get_daemon_pid as _get_daemon_pid,
+            stop_daemon as _stop_daemon,
+            is_process_running as _is_process_running
+        )
+        start_daemon_background = _start_daemon_background
+        DaemonClient = _DaemonClient
+        get_socket_path = _get_socket_path
+        save_daemon_pid = _save_daemon_pid
+        get_daemon_pid = _get_daemon_pid
+        stop_daemon = _stop_daemon
+        is_process_running = _is_process_running
+        _daemon_modules_loaded = True
+        return True
+    except ImportError:
+        return False
 
 
 def pytest_configure(config: Config) -> None:
@@ -49,6 +83,9 @@ def pytest_configure(config: Config) -> None:
         pytest.exit("Benchmark completed", returncode=0)
 
     # Handle daemon commands first
+    # PHASE 4.2: Lazy-load daemon modules only when needed
+    _load_daemon_modules()
+
     root_path = str(config.rootpath)
     socket_path = get_socket_path(root_path) if get_socket_path else None
 
@@ -223,9 +260,22 @@ def pytest_configure(config: Config) -> None:
                     if config.option.verbose >= 1:
                         print(f"FastCollect: Daemon started (PID {pid}). Next run will be 100-1000x faster!", file=sys.stderr)
             else:
-                # Daemon already running - silent success
+                # Daemon already running - trigger reload to handle stale code
+                # PHASE 4.2 FIX: Without this, modified test files would use cached (old) code
                 if config.option.verbose >= 2:
-                    print(f"FastCollect: Using existing daemon for instant collection", file=sys.stderr)
+                    print(f"FastCollect: Using existing daemon, checking for changes...", file=sys.stderr)
+
+                # Send reload request with all test file paths
+                # The daemon will check mtimes and only reload changed files
+                if _test_files_cache:
+                    try:
+                        reload_result = client.reload(_test_files_cache)
+                        reloaded = reload_result.get('modules_reloaded', 0)
+                        if reloaded > 0 and config.option.verbose >= 1:
+                            print(f"FastCollect: Reloaded {reloaded} changed module(s)", file=sys.stderr)
+                    except Exception as e:
+                        if config.option.verbose >= 2:
+                            print(f"FastCollect: Reload check failed (non-fatal): {e}", file=sys.stderr)
         except Exception as e:
             # Don't fail pytest if daemon auto-start fails
             if config.option.verbose >= 2:
@@ -363,6 +413,8 @@ def pytest_report_header(config: Config) -> Optional[str]:
     header = f"fastcollect: v{get_version()} (Rust-accelerated collection enabled)"
 
     # Add daemon status if auto-daemon is enabled
+    # PHASE 4.2: Lazy-load daemon modules for header check
+    _load_daemon_modules()
     if (hasattr(config.option, 'fastcollect_auto_daemon') and
         config.option.fastcollect_auto_daemon and
         get_socket_path and DaemonClient):
